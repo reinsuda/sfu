@@ -62,27 +62,55 @@ int main()
     //     }
     // }
     // log2 test
-    uint32_t max_ulp = 0;
+    // uint32_t max_ulp = 0;
+    // for (size_t src = 0; src < 0x100000000; src++)
+    // {
+
+    //     uint32_t src_rcp = (uint32_t)src;
+    //     float float_input = *reinterpret_cast<float *>(&src_rcp);
+    //     float g_f = log2(float_input);
+    //     uint32_t g_u = *reinterpret_cast<uint32_t *>(&g_f);
+    //     uint32_t rst = fp32_log2(src_rcp);
+    //     uint32_t diff = g_u > rst ? g_u - rst : rst - g_u;
+    //     if (diff >= 7)
+    //     {
+    //         if (!fp32_is_nan(g_u) || !fp32_is_nan(rst))
+    //             std::cout << std::hex << "input 0x" << src_rcp << " gl: 0x" << g_u << " rst: 0x" << rst << " diff: " << diff << std::endl;
+
+    //         if (!fp32_is_nan(rst) && diff > max_ulp)
+    //         {
+    //             max_ulp = diff;
+    //         }
+    //     }
+    // }
+    // std::cout << "test done!!!" << std::endl;
+    // std::cout << std::hex << " max ulp: " << max_ulp << std::endl;
+
+    // test sin
     for (size_t src = 0; src < 0x100000000; src++)
     {
+        uint32_t sfu_input = (uint32_t)src;
+        float src_f = *reinterpret_cast<float *>(&sfu_input);
 
-        uint32_t src_rcp = (uint32_t)src;
-        float float_input = *reinterpret_cast<float *>(&src_rcp);
-        float g_f = log2(float_input);
+        // Golden 模型计算 sin(x * 2pi)
+        float g_f = sin(src_f * float(3.14159265358979323 * 2));
         uint32_t g_u = *reinterpret_cast<uint32_t *>(&g_f);
-        uint32_t rst = fp32_log2(src_rcp);
+
+        // SFU 硬件模型计算
+        uint32_t rst = fp32_sin(sfu_input, false);
+
         uint32_t diff = g_u > rst ? g_u - rst : rst - g_u;
-        if (diff >= 7)
+        if (diff >= 5)
         {
             if (!fp32_is_nan(g_u) || !fp32_is_nan(rst))
-                std::cout << std::hex << "input 0x" << src_rcp << " gl: 0x" << g_u << " rst: 0x" << rst << " diff: " << diff << std::endl;
-
-            if (!fp32_is_nan(rst) && diff > max_ulp)
             {
-                max_ulp = diff;
+                std::cout << std::hex << "sfu_input: 0x" << sfu_input
+                          << " gl: 0x" << g_u
+                          << " rst: 0x" << rst
+                          << " diff: " << diff << std::endl;
+                assert(false);
+                
             }
         }
     }
-    std::cout << "test done!!!" << std::endl;
-    std::cout << std::hex << " max ulp: " << max_ulp << std::endl;
 }

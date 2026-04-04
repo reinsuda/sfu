@@ -7,9 +7,13 @@
 #include <stdio.h>
 #include <assert.h>
 #include <math.h>
+#include <iostream>
+#include <cstdint>
 
 typedef __int128 int128_t;
 typedef unsigned __int128 uint128_t;
+
+#define PI 3.1415927
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define BIT_N(value, pos) ((value >> (pos)) & 0x1)
@@ -113,102 +117,6 @@ static bool fp32_is_zero(uint32_t input)
     uint32_t sign = input & 0x80000000;
     uint32_t nonsign = input ^ sign;
     return (nonsign == 0);
-}
-
-static unsigned int ConvertFixToFloat(const unsigned int fixPoint, const unsigned int int_bit_num, const unsigned int dec_bits_num)
-{
-    // the fixed number is 0
-    if (fixPoint == 0)
-        return 0;
-
-    unsigned int sign = (fixPoint >> (int_bit_num + dec_bits_num)) & 0x1;
-    unsigned int integer = (fixPoint >> dec_bits_num) & ((1 << int_bit_num) - 1);
-    unsigned int decimal = fixPoint & ((1 << dec_bits_num) - 1);
-
-    // get exponent
-    // first, find leading one
-    unsigned int leading_one_loc = int_bit_num + dec_bits_num - 1;
-    for (; leading_one_loc >= 0; leading_one_loc--)
-    {
-        if (0x1 & (fixPoint >> leading_one_loc))
-        {
-            break;
-        }
-    }
-
-    unsigned int exponent = leading_one_loc - dec_bits_num + 127;
-    unsigned int mantissa = fixPoint & ((1 << leading_one_loc) - 1);
-    if (leading_one_loc < 23)
-        mantissa <<= (23 - leading_one_loc);
-    else
-        mantissa >>= (leading_one_loc - 23);
-    unsigned int float_result = sign << 31 | (exponent & 0xff) << 23 | mantissa & 0x1ffffff;
-
-    return float_result;
-}
-
-static uint32_t ConvertFloatToFix(const uint32_t number, // 1.8.23
-                                  const uint32_t fix_int_width, const uint32_t fix_mans_width)
-{
-    if (number == 0)
-        return 0;
-
-    int32_t exp = ((number >> 23) & 0xff) - ((1 << 7) - 1);
-    uint32_t mans = number & ((1 << 23) - 1);
-    uint32_t sign = 0x1 & (number >> 31);
-    uint32_t fix_point = 1 << 23 | mans;
-
-    uint32_t MAX_FIX_NUM = 1 << (fix_int_width + fix_mans_width) - 1;
-
-    if (exp > (int32_t)fix_int_width)
-        return sign << (fix_int_width + fix_mans_width) | MAX_FIX_NUM;
-
-    // 1.52 * 2^exp
-    if (exp > 0)
-        fix_point <<= exp;
-    else
-        fix_point >>= -exp; // the int part of fixed point should be all 0
-
-    if (fix_mans_width > 23)
-        fix_point <<= (fix_mans_width - 23);
-    else
-        fix_point >>= (23 - fix_mans_width);
-    return sign << (fix_int_width + fix_mans_width) | fix_point;
-}
-
-static uint64_t ConvertDoubleToFix(const uint64_t number, // 1.11.52
-                                   const uint64_t fix_int_width, const uint64_t fix_mans_width,
-                                   bool rounding = false)
-{
-    if (number == 0)
-        return 0;
-
-    int64_t exp = ((number >> 52) & 0x7ff) - ((1 << 10) - 1);
-    uint64_t mans = number & (((uint64_t)1 << 52) - 1);
-    uint64_t sign = 0x1 & (number >> 63);
-    uint64_t fix_point = (uint64_t)1 << 52 | mans;
-
-    uint64_t MAX_FIX_NUM = ((uint64_t)1 << (fix_int_width + fix_mans_width)) - 1;
-
-    if (exp >= (int64_t)fix_int_width)
-        return sign << (fix_int_width + fix_mans_width) | MAX_FIX_NUM;
-
-    // 1.52 * 2^exp
-    if (exp > 0)
-    {
-        fix_point <<= exp; // 1.52 << n --> (1+n).(52-n) --> fix_int_width.(52-n)
-    }
-    else
-        fix_point >>= -exp; // 1.52 >> n -->1.52
-
-    if (fix_mans_width > 52)
-        fix_point <<= (fix_mans_width - 52);
-    else
-    {
-        uint32_t rounding_bit = rounding ? (fix_point >> (52 - fix_mans_width + 1)) & 0x1 : 0;
-        fix_point = (fix_point >> (52 - fix_mans_width)) + rounding_bit;
-    }
-    return sign << (fix_int_width + fix_mans_width) | fix_point;
 }
 
 // 辅助函数：将 64位无符号整数 按照 RTNE (向偶数舍入) 规则进行移位
@@ -519,23 +427,58 @@ static uint64_t RCP_fix_multi(uint32_t A, uint32_t B, uint32_t C, uint32_t delta
     // return res;
 }
 
+static uint64_t SIN_fix_multi(uint64_t A, uint32_t B, uint32_t C, uint32_t delta,
+                              uint32_t wid_A, uint32_t wid_B, uint32_t wid_C, uint32_t exp,
+                              uint32_t wid_delta, uint32_t valid_bits)
+{
+    // 1. 动态计算当前区间的中心点偏移
+    // 依据 valid_bits (如 20)，中心点刚好在 1 << 19 处
+    uint32_t center_offset = 1 << (valid_bits - 1);
+
+    // 2. 以中心点为 0，计算有符号的 delta
+    int32_t signed_delta = (int32_t)delta - center_offset;
+
+    // 3. 提取符号和绝对值 (修复了三元运算符 Bug)
+    uint64_t sign_delta = (signed_delta < 0) ? 1 : 0;
+    // 取绝对值：负数取反加一，正数保留有效位
+    uint64_t ABS_delta = sign_delta ? ((~signed_delta & ((1 << valid_bits) - 1)) + 1) 
+                                    : (signed_delta & ((1 << valid_bits) - 1));
+
+    // 4. 计算 SIN 特有的动态指数补偿 (moreShift)
+    uint32_t tempShift = valid_bits - 17 - 1; // 面积优化：截断送入 ALU 的 delta 精度
+    uint32_t moreShift = 127 - exp - tempShift; // 浮点阶码带来的额外缩放
+
+    // 执行截断
+    ABS_delta >>= tempShift;
+
+    // 5. 将原本繁琐的乘法后右移，等效转化为“目标小数位宽的增加”
+    // 数学原理：在定点数中，结果右移 moreShift 等价于它的小数位宽增加了 moreShift
+    uint64_t wid_frac_BXdel = (wid_B - 3) + wid_delta + moreShift;
+    uint64_t wid_frac_CXdel = (wid_C - 5) + wid_delta + wid_delta + (moreShift * 2);
+
+    // 6. 定义各项的基础符号 (SIN 泰勒/Minimax 展开: A正, B看delta, C为二阶导恒负)
+    uint64_t sign_A = 0;
+    uint64_t sign_B = 0;
+    uint64_t sign_C = 1; // 标记 1 代表在 fix_multi 里做减法
+
+    // B 项的最终增减取决于 delta 的正负
+    uint64_t final_sign_B = sign_delta ^ sign_B;
+
+    // 7. 确定最大的对齐位宽
+    uint64_t max_width = max(max(wid_frac_BXdel, wid_frac_CXdel), (uint64_t)wid_A);
+
+    // 8. 调用底层的通用乘加树引擎
+    // 计算出的 max_width 减去各自的 wid_frac 即为各自需要补齐的左移位数 (shift_w)
+    return fix_multi(A, B, C, ABS_delta,
+                     max_width - wid_A,
+                     max_width - wid_frac_BXdel,
+                     max_width - wid_frac_CXdel,
+                     sign_A, final_sign_B, sign_C);
+}
+
+
 uint32_t fp32_rcp(uint32_t src);
 uint32_t fp32_sqrt(uint32_t src);
 uint32_t fp32_rsq(uint32_t src);
 uint32_t fp32_log2(uint32_t src);
-// temp
-// sqrt table
-static double fx_sqrt(double x)
-{
-    return pow(x, (double)0.5);
-}
-
-static double fx_sqrt_1d(double x) // 1st derivative for f(x) = 2^x
-{
-    return 0.5 * (pow(x, (double)-0.5));
-}
-
-static double fx_sqrt_2d(double x) // 2nd derivative for f(x) = 2^x
-{
-    return -0.25 * (pow(x, (double)-1.5));
-}
+uint32_t fp32_sin(uint32_t src, bool ftz);
