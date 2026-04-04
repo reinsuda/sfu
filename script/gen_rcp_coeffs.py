@@ -1,5 +1,16 @@
 import numpy as np
 import csv
+import struct
+
+def float_to_hex(f):
+    """将浮点数转换为32位无符号整数表示形式(用于位运算)"""
+    return struct.unpack('<I', struct.pack('<f', f))[0]
+
+def hex_to_float(h):
+    """将32位无符号整数转换为浮点数"""
+    return struct.unpack('<f', struct.pack('<I', h))[0]
+
+
 def compute_coeffs_rcp_128(t, p, q):
     """
     t: C0 的小数位宽 (实际硬件需预留 t+2 位以包含整数/符号)
@@ -552,3 +563,118 @@ def compute_coeffs_log2_128(t, p, q):
 t_width, p_width, q_width = 27, 18, 10
 final_table = compute_coeffs_log2_128(t_width, p_width, q_width)
 save_to_files(final_table, t_width+1, p_width+1, q_width+1, "log2_coeffs.h", "FP32_LOG2_TABLE", 128)
+
+
+def compute_sin_coeffs_minimax(t_bits, p_bits, q_bits):
+    """
+    基于 Minimax 原理生成 SIN 查找表系数。
+    t_bits: C0 (fixa) 的小数位宽 (对应 C++ 中的 A_pre)
+    p_bits: C1 (fixb) 的小数位宽 (对应 C++ 中的 B_pre - 3 或等效偏移)
+    q_bits: C2 (fixc) 的小数位宽 (对应 C++ 中的 C_pre - 5 或等效偏移)
+    """
+    segments = []
+    
+    # ==============================================================
+    # 1. 重构 C++ 中的分段逻辑，获取每段的中心点(x_c)和区间宽度(dx)
+    # ==============================================================
+    
+    # 区域 1: 浮点数指数区段 [2^-12, 2^-4) -> exp 115 to 122
+    for exp in range(115, 123):
+        for partId in range(8):
+            offset = partId << 20
+            # C++ 代码通过将 bit19 置 1 恰好获取了该子段的中心点
+            float_hex = (exp << 23) | offset | (1 << 19)
+            x_c = hex_to_float(float_hex)
+            
+            # 该指数下整个区间的宽度为 2^(exp-127)，分为8个子段，每段宽度为 2^(exp-130)
+            dx = 2**(exp - 130) 
+            segments.append((x_c, dx, f"exp{exp}_p{partId}"))
+
+    # 区域 2: 线性均匀分段区段 [2^-4, 2^-2) -> [0.0625, 0.25)
+    border = 127 - 123 # = 4
+    x_left = 1.0 / (1 << border)  # 2^-4 = 1/16 = 0.0625
+    dx = 1.0 / 256.0              # 线性步长
+    while x_left < 0.25 - 1e-6:   # 0.25 is 2^-2 (加一个小偏移防止精度丢失导致多跑一轮)
+        x_c = x_left + dx / 2.0   # C++ 中的 x_left + 1/512 恰好是中心点
+        segments.append((x_c, dx, f"lin_{x_left:.4f}"))
+        x_left += dx
+
+    # ==============================================================
+    # 2. Minimax 拟合与量化
+    # ==============================================================
+    errmax = 0
+    results = []
+
+    print(f"{'Segment':<12} | {'x_center':<10} | {'C0 (Hex)':<10} | {'|C1| (Hex)':<10} | {'|C2| (Hex)':<10} | {'Error':<10}")
+    print("-" * 80)
+
+    for i, (x_c, dx, label) in enumerate(segments):
+        # 1. 采样范围：围绕中心点 x_c 的相对偏移量 delta [-dx/2, dx/2]
+        n = 2**15 
+        delta_nodes = np.linspace(-dx / 2.0, dx / 2.0, n)
+        
+        # 2. 计算真实的 Y 值：sin(2 * pi * (x_c + delta))
+        y_nodes = np.sin(np.pi * 2 * (x_c + delta_nodes))
+
+        # 3. 初始多项式拟合 (基于 delta)
+        # 这一步自动包含了 C++ 中乘以 2*pi (一阶导) 和 (2*pi)^2 / 2 (二阶导) 的缩放效果
+        poly_coeffs = np.polyfit(delta_nodes, y_nodes, 2)
+        a2_raw, a1_raw = poly_coeffs[0], poly_coeffs[1]
+
+        # 4. 独立量化 C1 和 C2
+        C1 = np.round(a1_raw * (2**p_bits)) * (2**-p_bits)
+        C2 = np.round(a2_raw * (2**q_bits)) * (2**-q_bits)
+
+        # 5. 平衡常数项 C0 (Minimax 最关键一步：吸收 C1, C2 量化带来的系统误差)
+        rem_y = y_nodes - (C1 * delta_nodes + C2 * (delta_nodes**2))
+        a0_minimax = (np.max(rem_y) + np.min(rem_y)) / 2.0
+        C0 = np.round(a0_minimax * (2**t_bits)) * (2**-t_bits)
+
+        # 6. 误差计算 (使用更密集的测试集验证)
+        test_delta = np.linspace(-dx / 2.0, dx / 2.0, 1000)
+        actual_y = np.sin(np.pi * 2 * (x_c + test_delta))
+        approx_y = C0 + C1 * test_delta + C2 * (test_delta**2)
+        err = np.max(np.abs(actual_y - approx_y))
+
+        if err > errmax:
+            errmax = err
+
+        # 7. 转为整数表示以生成 Hex (与 C++ 行为对齐，提取绝对值存入查找表)
+        # 硬件在执行时 C2 对应的操作通常是减法 (因为 sin''(x) 在 [0, 0.25] 为负)
+        c0_int = int(round(abs(C0) * (2**t_bits)))
+        c1_int = int(round(abs(C1) * (2**p_bits)))
+        c2_int = int(round(abs(C2) * (2**q_bits)))
+
+        results.append({
+            "label": label, "x_c": x_c,
+            "C0_int": c0_int, "C1_int": c1_int, "C2_int": c2_int,
+            "err": err
+        })
+
+        # 打印头3个和最后3个作为观察对照
+        if i < 3 or i > len(segments) - 4:
+            # 根据位宽生成掩码保证干净的 hex 打印 (预留几位以防溢出)
+            mask_t = (1 << (t_bits + 2)) - 1
+            mask_p = (1 << (p_bits + 2)) - 1
+            mask_q = (1 << (q_bits + 2)) - 1
+
+            c0_disp = c0_int & mask_t
+            c1_disp = c1_int & mask_p
+            c2_disp = c2_int & mask_q
+
+            print(f"{label:<12} | {x_c:<10.6f} | 0x{c0_disp:<08x} | 0x{c1_disp:<08x} | 0x{c2_disp:<08x} | {err:.2e}")
+        
+        if i == 3:
+            print(f"{'...':<12} | {'...':<10} | {'...':<10} | {'...':<10} | {'...':<10} | {'...':<10}")
+
+    good_bits = np.abs(np.log2(errmax))
+    print("-" * 80)
+    print(f"Total Segments: {len(segments)}")
+    print(f"最大绝对误差 (MAE): {errmax:.12e}")
+    print(f"等效精度 (Good Bits): {good_bits:.2f} bits\n")
+
+    return results
+
+t_width, p_width, q_width = 27, 18, 10
+final_table = compute_sin_coeffs_minimax(t_width, p_width, q_width)
+save_to_files(final_table, t_width+1, p_width+1, q_width+1, "sincos_coeffs.h", "FP32_SINCOS_TABLE", 128)
