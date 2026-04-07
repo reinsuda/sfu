@@ -529,3 +529,4 @@ uint32_t fp32_sqrt(uint32_t src);
 uint32_t fp32_rsq(uint32_t src);
 uint32_t fp32_log2(uint32_t src);
 uint32_t fp32_sin(uint32_t src, bool ftz);
+uint32_t fp32_cos(uint32_t src, bool ftz);
