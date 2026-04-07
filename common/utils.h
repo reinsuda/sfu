@@ -240,14 +240,20 @@ static uint32_t NormalizeToFP32(uint64_t table_res, int exp, uint32_t dec_bits)
 }
 
 static uint64_t fix_multi(uint64_t A, uint32_t B, uint32_t C, uint64_t delta,
-                          uint32_t A_shit_w, uint32_t B_shift_w, uint32_t c_shift_w, uint32_t a_sign, uint32_t b_sign, uint32_t c_sign)
+                          uint32_t A_shit_w, uint32_t B_shift_w, uint32_t c_shift_w, uint32_t a_sign, uint32_t b_sign, uint32_t c_sign, uint32_t moreShift = 0)
 {
     uint64_t B_mul_del = delta * B;             // 0.23 * 0.15 -> 0.30
     uint64_t C_mul_del_del = delta * delta * C; // 0.23 * 0.23 * 0.8 -> 0.54
 
     uint64_t tempA = A << A_shit_w;
-    B_mul_del = B_mul_del << B_shift_w;
-    C_mul_del_del <<= c_shift_w;
+    // 💡 修复1：使用 <= 防止下溢出
+    B_mul_del = (moreShift <= B_shift_w) ? (B_mul_del << (B_shift_w - moreShift))
+                                         : (B_mul_del >> (moreShift - B_shift_w));
+
+    uint32_t c_more_shift = moreShift << 1;
+    // 💡 修复2：既然减数是 c_more_shift，判断条件必须是 c_more_shift <= c_shift_w！
+    C_mul_del_del = (c_more_shift <= c_shift_w) ? (C_mul_del_del << (c_shift_w - c_more_shift))
+                                                : (C_mul_del_del >> (c_more_shift - c_shift_w));
     tempA = a_sign ? (~tempA) + 1 : tempA;
     B_mul_del = b_sign ? ~B_mul_del + 1 : B_mul_del;
     C_mul_del_del = c_sign ? ~C_mul_del_del + 1 : C_mul_del_del;
@@ -427,55 +433,96 @@ static uint64_t RCP_fix_multi(uint32_t A, uint32_t B, uint32_t C, uint32_t delta
     // return res;
 }
 
+// static uint64_t SIN_fix_multi(uint64_t A, uint32_t B, uint32_t C, uint32_t delta,
+//                               uint32_t wid_A, uint32_t wid_B, uint32_t wid_C, uint32_t exp,
+//                               uint32_t wid_delta, uint32_t valid_bits)
+// {
+//     // 1. 动态计算当前区间的中心点偏移
+//     // 依据 valid_bits (如 20)，中心点刚好在 1 << 19 处
+//     uint32_t center_offset = 1 << (valid_bits - 1);
+
+//     // 2. 以中心点为 0，计算有符号的 delta
+//     int32_t signed_delta = (int32_t)delta - center_offset;
+
+//     // 3. 提取符号和绝对值 (修复了三元运算符 Bug)
+//     uint64_t sign_delta = (signed_delta < 0) ? 1 : 0;
+//     // 取绝对值：负数取反加一，正数保留有效位
+//     uint64_t ABS_delta = sign_delta ? ((~signed_delta & ((1 << valid_bits) - 1)) + 1)
+//                                     : (signed_delta & ((1 << valid_bits) - 1));
+
+//     // 4. 计算 SIN 特有的动态指数补偿 (moreShift)
+//     uint32_t tempShift = valid_bits - 17 - 1;   // 面积优化：截断送入 ALU 的 delta 精度
+//     uint32_t moreShift = 127 - exp - tempShift; // 浮点阶码带来的额外缩放
+
+//     // 执行截断
+//     ABS_delta >>= tempShift;
+
+//     // 5. 将原本繁琐的乘法后右移，等效转化为“目标小数位宽的增加”
+//     // 数学原理：在定点数中，结果右移 moreShift 等价于它的小数位宽增加了 moreShift
+//     uint64_t wid_frac_BXdel = (int32_t)wid_B - 3 + wid_delta;
+//     uint64_t wid_frac_CXdel = (int32_t)wid_C - 5 + wid_delta + wid_delta;
+
+//     // 6. 定义各项的基础符号 (SIN 泰勒/Minimax 展开: A正, B看delta, C为二阶导恒负)
+//     uint64_t sign_A = 0;
+//     uint64_t sign_B = 0;
+//     uint64_t sign_C = 1; // 标记 1 代表在 fix_multi 里做减法
+
+//     // B 项的最终增减取决于 delta 的正负
+//     uint64_t final_sign_B = sign_delta ^ sign_B;
+
+//     // 7. 确定最大的对齐位宽
+//     uint64_t max_width = max(max(wid_frac_BXdel, wid_frac_CXdel), (uint64_t)wid_A);
+//     assert(max_width < 60);
+//     // 8. 调用底层的通用乘加树引擎
+//     // 计算出的 max_width 减去各自的 wid_frac 即为各自需要补齐的左移位数 (shift_w)
+//     return fix_multi(A, B, C, ABS_delta,
+//                      max_width - wid_A,
+//                      max_width - wid_frac_BXdel,
+//                      max_width - wid_frac_CXdel,
+//                      sign_A, final_sign_B, sign_C, moreShift);
+// }
+
 static uint64_t SIN_fix_multi(uint64_t A, uint32_t B, uint32_t C, uint32_t delta,
                               uint32_t wid_A, uint32_t wid_B, uint32_t wid_C, uint32_t exp,
                               uint32_t wid_delta, uint32_t valid_bits)
 {
-    // 1. 动态计算当前区间的中心点偏移
-    // 依据 valid_bits (如 20)，中心点刚好在 1 << 19 处
     uint32_t center_offset = 1 << (valid_bits - 1);
-
-    // 2. 以中心点为 0，计算有符号的 delta
     int32_t signed_delta = (int32_t)delta - center_offset;
-
-    // 3. 提取符号和绝对值 (修复了三元运算符 Bug)
     uint64_t sign_delta = (signed_delta < 0) ? 1 : 0;
-    // 取绝对值：负数取反加一，正数保留有效位
-    uint64_t ABS_delta = sign_delta ? ((~signed_delta & ((1 << valid_bits) - 1)) + 1) 
+
+    uint64_t ABS_delta = sign_delta ? ((~signed_delta & ((1 << valid_bits) - 1)) + 1)
                                     : (signed_delta & ((1 << valid_bits) - 1));
 
-    // 4. 计算 SIN 特有的动态指数补偿 (moreShift)
-    uint32_t tempShift = valid_bits - 17 - 1; // 面积优化：截断送入 ALU 的 delta 精度
-    uint32_t moreShift = 127 - exp - tempShift; // 浮点阶码带来的额外缩放
+    // 使用 int32_t 彻底防止大角度无符号下溢
+    int32_t tempShift = (int32_t)valid_bits - 18;
+    int32_t moreShift = 127 - (int32_t)exp - tempShift;
 
-    // 执行截断
-    ABS_delta >>= tempShift;
+    if (tempShift > 0)
+        ABS_delta >>= tempShift;
+    else if (tempShift < 0)
+        ABS_delta <<= (-tempShift);
 
-    // 5. 将原本繁琐的乘法后右移，等效转化为“目标小数位宽的增加”
-    // 数学原理：在定点数中，结果右移 moreShift 等价于它的小数位宽增加了 moreShift
-    uint64_t wid_frac_BXdel = (wid_B - 3) + wid_delta + moreShift;
-    uint64_t wid_frac_CXdel = (wid_C - 5) + wid_delta + wid_delta + (moreShift * 2);
+    // 💡 核心：基础位宽绝对不包含 moreShift，保证 max_width 恒定！
+    uint64_t wid_frac_BXdel = (int32_t)wid_B - 3 + wid_delta;
+    uint64_t wid_frac_CXdel = (int32_t)wid_C - 5 + wid_delta + wid_delta;
 
-    // 6. 定义各项的基础符号 (SIN 泰勒/Minimax 展开: A正, B看delta, C为二阶导恒负)
     uint64_t sign_A = 0;
     uint64_t sign_B = 0;
-    uint64_t sign_C = 1; // 标记 1 代表在 fix_multi 里做减法
+    uint64_t sign_C = 1;
 
-    // B 项的最终增减取决于 delta 的正负
     uint64_t final_sign_B = sign_delta ^ sign_B;
 
-    // 7. 确定最大的对齐位宽
+    // 算出来的 max_width 将会完美定死在 51 (若A=27, B=18, C=10)
     uint64_t max_width = max(max(wid_frac_BXdel, wid_frac_CXdel), (uint64_t)wid_A);
+    // 你的硬件断言
+    // assert(max_width < 60);
 
-    // 8. 调用底层的通用乘加树引擎
-    // 计算出的 max_width 减去各自的 wid_frac 即为各自需要补齐的左移位数 (shift_w)
     return fix_multi(A, B, C, ABS_delta,
                      max_width - wid_A,
                      max_width - wid_frac_BXdel,
                      max_width - wid_frac_CXdel,
-                     sign_A, final_sign_B, sign_C);
+                     sign_A, final_sign_B, sign_C, (uint32_t)moreShift);
 }
-
 
 uint32_t fp32_rcp(uint32_t src);
 uint32_t fp32_sqrt(uint32_t src);

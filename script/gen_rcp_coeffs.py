@@ -609,28 +609,34 @@ def compute_sin_coeffs_minimax(t_bits, p_bits, q_bits):
     print("-" * 80)
 
     for i, (x_c, dx, label) in enumerate(segments):
-        # 1. 采样范围：围绕中心点 x_c 的相对偏移量 delta [-dx/2, dx/2]
+        # 1. 采样范围
         n = 2**15 
         delta_nodes = np.linspace(-dx / 2.0, dx / 2.0, n)
         
         # 2. 计算真实的 Y 值：sin(2 * pi * (x_c + delta))
         y_nodes = np.sin(np.pi * 2 * (x_c + delta_nodes))
 
-        # 3. 初始多项式拟合 (基于 delta)
-        # 这一步自动包含了 C++ 中乘以 2*pi (一阶导) 和 (2*pi)^2 / 2 (二阶导) 的缩放效果
+        # 3. 初始多项式拟合
         poly_coeffs = np.polyfit(delta_nodes, y_nodes, 2)
         a2_raw, a1_raw = poly_coeffs[0], poly_coeffs[1]
 
-        # 4. 独立量化 C1 和 C2
-        C1 = np.round(a1_raw * (2**p_bits)) * (2**-p_bits)
-        C2 = np.round(a2_raw * (2**q_bits)) * (2**-q_bits)
+        # ==============================================================
+        # 💡 核心修复：计算纯小数位宽 (Fractional Bits)
+        # ==============================================================
+        t_frac = t_bits          # C0 是纯小数，小数位 = 总位宽 = 27
+        p_frac = p_bits - 3      # C1 约等于 6.28，需要 3 位整数，小数位 = 18 - 3 = 15
+        q_frac = q_bits - 5      # C2 约等于 19.7，需要 5 位整数，小数位 = 10 - 5 = 5 (若 q_bits=8，则为 3)
 
-        # 5. 平衡常数项 C0 (Minimax 最关键一步：吸收 C1, C2 量化带来的系统误差)
+        # 4. 独立量化 C1 和 C2 (必须使用小数位宽 t_frac / p_frac / q_frac！)
+        C1 = np.round(a1_raw * (2**p_frac)) * (2**-p_frac)
+        C2 = np.round(a2_raw * (2**q_frac)) * (2**-q_frac)
+
+        # 5. 平衡常数项 C0
         rem_y = y_nodes - (C1 * delta_nodes + C2 * (delta_nodes**2))
         a0_minimax = (np.max(rem_y) + np.min(rem_y)) / 2.0
-        C0 = np.round(a0_minimax * (2**t_bits)) * (2**-t_bits)
+        C0 = np.round(a0_minimax * (2**t_frac)) * (2**-t_frac)
 
-        # 6. 误差计算 (使用更密集的测试集验证)
+        # 6. 误差计算
         test_delta = np.linspace(-dx / 2.0, dx / 2.0, 1000)
         actual_y = np.sin(np.pi * 2 * (x_c + test_delta))
         approx_y = C0 + C1 * test_delta + C2 * (test_delta**2)
@@ -639,11 +645,10 @@ def compute_sin_coeffs_minimax(t_bits, p_bits, q_bits):
         if err > errmax:
             errmax = err
 
-        # 7. 转为整数表示以生成 Hex (与 C++ 行为对齐，提取绝对值存入查找表)
-        # 硬件在执行时 C2 对应的操作通常是减法 (因为 sin''(x) 在 [0, 0.25] 为负)
-        c0_int = int(round(abs(C0) * (2**t_bits)))
-        c1_int = int(round(abs(C1) * (2**p_bits)))
-        c2_int = int(round(abs(C2) * (2**q_bits)))
+        # 7. 转为整数表示以生成 Hex (同样必须乘以 2 的小数位宽次方！)
+        c0_int = int(round(abs(C0) * (2**t_frac)))
+        c1_int = int(round(abs(C1) * (2**p_frac)))
+        c2_int = int(round(abs(C2) * (2**q_frac)))
 
         results.append({
             "label": label, "x_c": x_c,
@@ -653,10 +658,10 @@ def compute_sin_coeffs_minimax(t_bits, p_bits, q_bits):
 
         # 打印头3个和最后3个作为观察对照
         if i < 3 or i > len(segments) - 4:
-            # 根据位宽生成掩码保证干净的 hex 打印 (预留几位以防溢出)
-            mask_t = (1 << (t_bits + 2)) - 1
-            mask_p = (1 << (p_bits + 2)) - 1
-            mask_q = (1 << (q_bits + 2)) - 1
+            # 打印用的掩码使用传入的总位宽
+            mask_t = (1 << t_bits) - 1
+            mask_p = (1 << p_bits) - 1
+            mask_q = (1 << q_bits) - 1
 
             c0_disp = c0_int & mask_t
             c1_disp = c1_int & mask_p
