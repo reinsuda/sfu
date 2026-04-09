@@ -229,11 +229,11 @@ uint32_t fp32_sin(uint32_t src, bool ftz)
                                        delta_width // 当前段的 delta 位宽
     );
 
-    uint64_t wid_frac_BXdel = (int32_t)pre.B_pre - 3 + FP32_MANT_WIDTH;
-    uint64_t wid_frac_CXdel = (int32_t)pre.C_pre - 5 + FP32_MANT_WIDTH + FP32_MANT_WIDTH;
+    uint32_t wid_frac_BXdel = (int32_t)pre.B_pre - 3 + FP32_MANT_WIDTH;
+    uint32_t wid_frac_CXdel = (int32_t)pre.C_pre - 5 + FP32_MANT_WIDTH + FP32_MANT_WIDTH;
 
     // 算出来的 decimal_bits 必须永远等价于底层的 max_width (例如 51)
-    uint64_t decimal_bits = max(max(wid_frac_BXdel, wid_frac_CXdel), (uint64_t)pre.A_pre);
+    uint32_t decimal_bits = std::max(std::max(wid_frac_BXdel, wid_frac_CXdel), pre.A_pre);
 
     if (table_res != 0)
     {
@@ -420,10 +420,10 @@ uint32_t fp32_cos(uint32_t src, bool ftz)
                                        23,
                                        delta_width);
 
-    uint64_t wid_frac_BXdel = (int32_t)pre.B_pre - 3 + FP32_MANT_WIDTH;
-    uint64_t wid_frac_CXdel = (int32_t)pre.C_pre - 5 + FP32_MANT_WIDTH + FP32_MANT_WIDTH;
+    uint32_t wid_frac_BXdel = (int32_t)pre.B_pre - 3 + FP32_MANT_WIDTH;
+    uint32_t wid_frac_CXdel = (int32_t)pre.C_pre - 5 + FP32_MANT_WIDTH + FP32_MANT_WIDTH;
 
-    uint64_t decimal_bits = max(max(wid_frac_BXdel, wid_frac_CXdel), (uint64_t)pre.A_pre);
+    uint32_t decimal_bits = std::max(std::max(wid_frac_BXdel, wid_frac_CXdel), pre.A_pre);
 
     if (table_res != 0)
     {

@@ -92,34 +92,34 @@ uint32_t fp32_sig(uint32_t src)
     bool is_exp = false;
     rcp_entry_t table;
     uint64_t table_res;
-    if (exp < 116)
-    {
-        return 0x3f000000;
-    }
-    if (exp < 130)
-    {
-        lut_id = getSigTableId(exp, mant, delta, delta_bit);
-        table = FP32_SIG_TABLE[lut_id];
-        uint64_t table_res = SIG_fix_multi(table.c0, table.c1_abs, table.c2, delta, pre.A_pre, pre.B_pre, pre.C_pre);
-        uint32_t test_rst = NormalizeToFP32(table_res, 254 - exp, pre.C_pre + (2 * FP32_MANT_WIDTH));
-    }
-    else
-    {
-        if (exp)
+    // if (exp < 116)
+    // {
+    //     return 0x3f000000;
+    // }
+    // if (exp < 130)
+    // {
+    //     lut_id = getSigTableId(exp, mant, delta, delta_bit);
+    //     table = FP32_SIG_TABLE[lut_id];
+    //     uint64_t table_res = SIG_fix_multi(table.c0, table.c1_abs, table.c2, delta, pre.A_pre, pre.B_pre, pre.C_pre);
+    //     uint32_t test_rst = NormalizeToFP32(table_res, 254 - exp, pre.C_pre + (2 * FP32_MANT_WIDTH));
+    // }
+    // else
+    // {
+    //     if (exp)
 
-            else
-            {
-                decimal = (sig >> -expNoBias) & 0x7fffff;
-            }
-        uint32_t lut_id = (mant >> 16) & 0x7F;
-        uint32_t delta = mant & 0xFFFF;
+    //         else
+    //         {
+    //             decimal = (sig >> -expNoBias) & 0x7fffff;
+    //         }
+    //     uint32_t lut_id = (mant >> 16) & 0x7F;
+    //     uint32_t delta = mant & 0xFFFF;
 
-        rcp_entry_t table = FP32_EXP2_TABLE[lut_id];
+    //     rcp_entry_t table = FP32_EXP2_TABLE[lut_id];
 
-        // 调用定点数乘加树
-        uint64_t table_res = EXP_fix_multi(table.c0, table.c1_abs, table.c2, delta, 25, 19, 13);
-        uint32_t test_rst = NormalizeToFP32(table_res, newExp + 127, 13 + 46); // 2 * FP32_MANT_WIDTH = 46
-    }
+    //     // 调用定点数乘加树
+    //     uint64_t table_res = EXP_fix_multi(table.c0, table.c1_abs, table.c2, delta, 25, 19, 13);
+    //     uint32_t test_rst = NormalizeToFP32(table_res, newExp + 127, 13 + 46); // 2 * FP32_MANT_WIDTH = 46
+    // }
 
-    return test_rst | sign;
+    // return test_rst | sign;
 }
