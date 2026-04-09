@@ -683,3 +683,190 @@ def compute_sin_coeffs_minimax(t_bits, p_bits, q_bits):
 t_width, p_width, q_width = 27, 18, 10
 final_table = compute_sin_coeffs_minimax(t_width, p_width, q_width)
 save_to_files(final_table, t_width+1, p_width+1, q_width+1, "sincos_coeffs.h", "FP32_SINCOS_TABLE", 128)
+
+
+def compute_coeffs_exp_32(t=25, p=19, q=13):
+    """
+    t: C0 的小数位宽 (对应你 C++ 里的 pre.A_pre = 25)
+    p: C1 的小数位宽 (对应 pre.B_pre = 19)
+    q: C2 的小数位宽 (对应 pre.C_pre = 13)
+    
+    生成 2^x 在 [0, 1) 区间的 32 分段查找表
+    这正是处理 e^x 从 -8 到 -INF 长尾所必须的底层硬件表！
+    """
+    errmax = 0
+    num_segments = 32
+    dx_max = 1.0 / 32.0
+    results = []
+
+    print(f"{'Segment':<8} | {'C0 (Hex)':<10} | {'C1 (Hex)':<10} | {'C2 (Hex)':<10} | {'Error':<10}")
+    print("-" * 65)
+
+    for i in range(num_segments):
+        # 1. 确定当前段的【中心点】(0 ~ 1 之间)
+        m_center = i * dx_max + (dx_max / 2.0)
+        
+        # 2. 采样范围：对称的 delta [-dx_max/2, dx_max/2]
+        n = 2**16 
+        delta_nodes = np.linspace(-dx_max / 2.0, dx_max / 2.0, n)
+        
+        # 3. 计算真实的 Y 值：2^(center + delta)
+        y_nodes = np.exp2(m_center + delta_nodes)
+
+        # 4. 二次多项式初始拟合
+        poly_coeffs = np.polyfit(delta_nodes, y_nodes, 2)
+        a2_raw, a1_raw = poly_coeffs[0], poly_coeffs[1]
+
+        # 5. 独立量化 C1 和 C2
+        C1 = np.round(a1_raw * (2**p)) * (2**-p)
+        C2 = np.round(a2_raw * (2**q)) * (2**-q)
+
+        # 6. 平衡常数项 C0 (Minimax 中心化补偿)
+        rem_y = np.exp2(m_center + delta_nodes) - (C1 * delta_nodes + C2 * (delta_nodes**2))
+        a0_minimax = (np.max(rem_y) + np.min(rem_y)) / 2
+        C0 = np.round(a0_minimax * (2**t)) * (2**-t)
+
+        # 7. 误差计算
+        test_delta = np.linspace(-dx_max / 2.0, dx_max / 2.0, 500)
+        actual_y = np.exp2(m_center + test_delta)
+        approx_y = C0 + C1 * test_delta + C2 * (test_delta**2)
+        err = np.max(np.abs(actual_y - approx_y))
+
+        if err > errmax:
+            errmax = err
+        
+        # 转化为定点数整数值
+        c0_int = int(round(C0 * 2**t))
+        c1_int = int(round(C1 * 2**p))
+        c2_int = int(round(C2 * 2**q))
+
+        results.append({
+            "segment": i,
+            "C0": C0, "C1": C1, "C2": C2,
+            "C0_int": c0_int,
+            "C1_int": c1_int,
+            "C2_int": c2_int,
+            "err": err
+        })
+
+        # ====================================================
+        # 掩码提取：
+        # C0 的范围是 1.0 ~ 2.0，必须保留至少 2 个整数位
+        # C1 (斜率) 约等于 ln(2) * 2^x，最大约 1.38，也需整数位
+        # ====================================================
+        mask_t = (1 << (t + 2)) - 1
+        mask_p = (1 << (p + 2)) - 1
+        mask_q = (1 << (q + 2)) - 1
+
+        c0_display = c0_int & mask_t
+        c1_display = abs(c1_int) & mask_p 
+        c2_display = c2_int & mask_q
+        
+        # 打印头尾几项看看结果
+        if i < 3 or i >= 29:
+            print(f"{i:<8} | {c0_display:<10x} | {c1_display:<10x} | {c2_display:<10x} | {err:.2e}")
+        elif i == 3:
+            print(f"{'...':<8} | {'...':<10} | {'...':<10} | {'...':<10} | {'...':<10}")
+
+    good_bits = np.abs(np.log2(errmax))
+    print("-" * 65)
+    print(f"最大绝对误差 (MAE): {errmax:.12e}")
+    print(f"等效精度 (Good Bits): {good_bits:.2f} bits\n")
+    
+    return results
+
+t_width, p_width, q_width = 24, 18, 13
+final_table = compute_coeffs_exp_32(t_width, p_width, q_width)
+save_to_files(final_table, t_width+1, p_width+1, q_width+1, "exp_coeffs.h", "FP32_EXP_TABLE", 32)
+
+
+def compute_coeffs_exp2_128(t, p, q):
+    """
+    t: C0 的小数位宽 (对应你 C++ 代码中的 A_pre 实际小数位)
+    p: C1 的小数位宽 (对应 B_pre)
+    q: C2 的小数位宽 (对应 C_pre)
+    针对 2^x 在 [0, 1) 区间的分段优化 (128段)
+    """
+    errmax = 0
+    num_segments = 128
+    dx_max = 1.0 / 128.0
+    results = []
+
+    print(f"{'Segment':<8} | {'C0 (Hex)':<12} | {'C1 (Hex)':<12} | {'C2 (Hex)':<12} | {'Error':<10}")
+    print("-" * 75)
+
+    for i in range(num_segments):
+        # 1. 确定当前段的【中心点】
+        # 2^x 的区间是 [0, 1)，起点为 0.0
+        m_center = 0.0 + i * dx_max + (dx_max / 2.0)
+        
+        # 2. 采样范围：围绕中心点的相对偏移量 delta [-dx_max/2, dx_max/2]
+        n = 2**16 
+        delta_nodes = np.linspace(-dx_max / 2.0, dx_max / 2.0, n)
+        
+        # 3. 计算真实的 Y 值：2^(中心点 + delta)
+        y_nodes = 2.0 ** (m_center + delta_nodes)
+
+        # 4. 初始拟合 (二阶多项式)
+        # 相当于找到最佳的 a2*x^2 + a1*x + a0
+        poly_coeffs = np.polyfit(delta_nodes, y_nodes, 2)
+        a2_raw, a1_raw = poly_coeffs[0], poly_coeffs[1]
+
+        # 5. 独立量化 C1 和 C2
+        # 注意：2^x 的一阶和二阶导数均为正，直接四舍五入即可
+        C1 = np.round(a1_raw * (2**p)) * (2**-p)
+        C2 = np.round(a2_raw * (2**q)) * (2**-q) 
+
+        # 6. 平衡常数项 C0 (Minimax 误差平衡)
+        rem_y = (2.0 ** (m_center + delta_nodes)) - (C1 * delta_nodes + C2 * (delta_nodes**2))
+        a0_minimax = (np.max(rem_y) + np.min(rem_y)) / 2.0
+        C0 = np.round(a0_minimax * (2**t)) * (2**-t)
+
+        # 7. 误差计算 (在测试集上验证)
+        test_delta = np.linspace(-dx_max / 2.0, dx_max / 2.0, 500)
+        actual_y = 2.0 ** (m_center + test_delta)
+        approx_y = C0 + C1 * test_delta + C2 * (test_delta**2)
+        err = np.max(np.abs(actual_y - approx_y))
+
+        if err > errmax:
+            errmax = err
+        
+        c0_int = int(round(C0 * 2**t))
+        c1_int = int(round(C1 * 2**p))
+        c2_int = int(round(C2 * 2**q))
+
+        results.append({
+            "segment": i,
+            "C0": C0, "C1": C1, "C2": C2,
+            "C0_int": c0_int,
+            "C1_int": c1_int,
+            "C2_int": c2_int,
+            "err": err
+        })
+
+        # 仅打印头部和尾部数据用于观察
+        if i < 3 or i == 127:
+            # 掩码扩展：2^x 在 [0,1) 的值域是 [1, 2)，C0 必然包含一个整数位 '1'
+            # 预留 2 bits 给整数位/符号位防止截断溢出
+            mask_t = (1 << (t + 2)) - 1
+            mask_p = (1 << (p + 2)) - 1
+            mask_q = (1 << (q + 2)) - 1
+
+            c0_display = c0_int & mask_t
+            c1_display = c1_int & mask_p 
+            c2_display = c2_int & mask_q 
+            
+            print(f"{i:<8} | {c0_display:<12x} | {c1_display:<12x} | {c2_display:<12x} | {err:.2e}")
+
+    # 防止 err 为 0 时 log2 报错
+    good_bits = np.abs(np.log2(errmax)) if errmax > 0 else 0
+    print("-" * 75)
+    print(f"最大绝对误差 (MAE): {errmax:.12e}")
+    print(f"等效精度 (Good Bits): {good_bits:.2f} bits\n")
+    
+    return results
+
+
+t_width, p_width, q_width = 24, 18, 13
+final_table = compute_coeffs_exp2_128(t_width, p_width, q_width)
+save_to_files(final_table, t_width+1, p_width+1, q_width+1, "exp2_coeffs.h", "FP32_EXP2_TABLE", 128)

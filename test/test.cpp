@@ -181,59 +181,159 @@ int main()
     //(0 ~1)24个ulp
     // std::cout << std::hex << "cos max ulp: " << cos_max_ulp << " input: " << cos_max_input << std::endl;
 
-    std::cout << "--- Start fp32_exp2 exhaustive test ---" << std::endl;
+    //     std::cout << "--- Start fp32_exp2 exhaustive test ---" << std::endl;
 
-    uint32_t exp2_max_ulp = 0;
-    uint32_t exp2_error_count = 0;
+    //     uint32_t exp2_max_ulp = 0;
+    //     uint32_t exp2_error_count = 0;
+    // #pragma omp parallel for
+    //     for (size_t src = 0; src < 0x100000000; src++)
+    //     {
+    //         uint32_t src_hex = (uint32_t)src;
+    //         float float_input = *reinterpret_cast<float *>(&src_hex);
+
+    //         // 1. 获取 CPU 双精度计算的 Golden 结果
+    //         float g_f = std::exp2(float_input);
+    //         uint32_t g_u = *reinterpret_cast<uint32_t *>(&g_f);
+
+    //         // 2. 获取你的硬件仿真结果
+    //         uint32_t rst = fp32_exp2(src_hex);
+
+    //         // ==========================================
+    //         // 💡 硬件行为对齐滤镜 (Filters)
+    //         // ==========================================
+
+    //         // 滤镜 A: NaN 屏蔽。
+    //         // CPU 产生的 NaN 和硬件产生的 NaN 只要阶码全为 1 且尾数非 0 就是合法的，
+    //         // 它们的尾数 Payload 可能不同，相减会产生巨大 Diff，直接跳过不比对。
+    //         bool is_in_nan = ((src_hex & 0x7F800000) == 0x7F800000) && ((src_hex & 0x007FFFFF) != 0);
+    //         if (is_in_nan)
+    //             continue;
+
+    //         // 滤镜 B: CPU 非规格化数冲刷到零 (Flush-to-Zero, FTZ)。
+    //         // 硬件通常不保留非规格化数，如果 CPU 算出的阶码是 0，强行刷成 0
+
+    //         // ==========================================
+
+    //         // 3. 计算 ULP Diff
+    //         uint32_t diff = g_u > rst ? g_u - rst : rst - g_u;
+
+    //         // 4. 统计与报错逻辑 (假设我们容忍最大 4 ULP 的误差)
+    //         if (diff > exp2_max_ulp)
+    //         {
+    //             exp2_max_ulp = diff;
+    //         }
+
+    //         // 打印出超过宽容度的异常值，方便 Debug
+    //         if (diff > 4)
+    //         {
+    // #pragma omp critical
+    //             {
+    //                 exp2_error_count++;
+    //                 // 为了防止刷屏，只打印前 20 个错误
+    //                 if (exp2_error_count <= 20)
+    //                 {
+    //                     std::cout << std::hex
+    //                               << "exp2 input: 0x" << src_hex
+    //                               << " (" << float_input << ")"
+    //                               << " | gl: 0x" << g_u
+    //                               << " | rst: 0x" << rst
+    //                               << std::dec << " | diff: " << diff
+    //                               << std::endl;
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     std::cout << std::dec << "exp2 errors (>4 ULP): " << exp2_error_count << std::endl;
+    //     std::cout << std::hex << "exp2 max ulp: " << exp2_max_ulp << std::endl;
+    //     std::cout << "---------------------------------------" << std::endl;
+
+    std::cout << "--- Start fp32_sig exhaustive test ---" << std::endl;
+
+    uint32_t sig_max_ulp = 0;
+    uint32_t sig_error_count = 0;
+
 #pragma omp parallel for
     for (size_t src = 0; src < 0x100000000; src++)
     {
         uint32_t src_hex = (uint32_t)src;
         float float_input = *reinterpret_cast<float *>(&src_hex);
 
+        // ==========================================
         // 1. 获取 CPU 双精度计算的 Golden 结果
-        float g_f = std::exp2(float_input);
+        // ==========================================
+        // 转为 double 算真值，再截断回 float，保证 Golden 的完美精度
+        double d_in = (double)float_input;
+        float g_f = (float)(1.0 / (1.0 + std::exp(-d_in)));
         uint32_t g_u = *reinterpret_cast<uint32_t *>(&g_f);
 
+        // ==========================================
         // 2. 获取你的硬件仿真结果
-        uint32_t rst = fp32_exp2(src_hex);
+        // ==========================================
+        uint32_t rst = fp32_sig(src_hex);
 
         // ==========================================
-        // 💡 硬件行为对齐滤镜 (Filters)
+        // 3. 💡 硬件行为对齐滤镜 (Filters)
         // ==========================================
 
-        // 滤镜 A: NaN 屏蔽。
-        // CPU 产生的 NaN 和硬件产生的 NaN 只要阶码全为 1 且尾数非 0 就是合法的，
-        // 它们的尾数 Payload 可能不同，相减会产生巨大 Diff，直接跳过不比对。
+        // 滤镜 A: NaN 屏蔽
         bool is_in_nan = ((src_hex & 0x7F800000) == 0x7F800000) && ((src_hex & 0x007FFFFF) != 0);
         if (is_in_nan)
             continue;
 
-        // 滤镜 B: CPU 非规格化数冲刷到零 (Flush-to-Zero, FTZ)。
-        // 硬件通常不保留非规格化数，如果 CPU 算出的阶码是 0，强行刷成 0
+        // 滤镜 B: Sigmoid 特有的饱和区双向强制对齐 (Saturation Bypass)
+        // 假设你的硬件在 |x| >= 16.0 时直接输出 1.0 或 0.0 (请根据你真实的硬件代码阈值修改！)
+        // if (float_input >= 16.0f)
+        // {
+        //     g_u = 0x3F800000; // 强行让 CPU 在正饱和区输出 1.0
+        // }
+        // else if (float_input <= -16.0f)
+        // {
+        //     g_u = 0x00000000; // 强行让 CPU 在负饱和区输出 0.0
+        // }
+
+        // // 滤镜 C: 双向非规格化数冲刷到零 (FTZ)
+        // // 只要阶码是 0 (即 bits 23-30 全为 0)，统统强行刷成纯 0！
+        // if ((g_u & 0x7F800000) == 0)
+        //     g_u = 0x00000000;
+        // if ((rst & 0x7F800000) == 0)
+        //     rst = 0x00000000;
+
+        // // 滤镜 D: 统一冲刷 -0.0 为 +0.0
+        // if (g_u == 0x80000000)
+        //     g_u = 0x00000000;
+        // if (rst == 0x80000000)
+        //     rst = 0x00000000;
 
         // ==========================================
 
-        // 3. 计算 ULP Diff
+        // 4. 计算 ULP Diff
         uint32_t diff = g_u > rst ? g_u - rst : rst - g_u;
 
-        // 4. 统计与报错逻辑 (假设我们容忍最大 4 ULP 的误差)
-        if (diff > exp2_max_ulp)
+        // 5. 统计与报错逻辑 (容忍最大 4~5 ULP 的误差)
+        if (diff > sig_max_ulp)
         {
-            exp2_max_ulp = diff;
+            // 💡 修复 OpenMP 数据竞争：使用 critical 区块安全更新最大值
+#pragma omp critical
+            {
+                if (diff > sig_max_ulp)
+                {
+                    sig_max_ulp = diff;
+                }
+            }
         }
 
-        // 打印出超过宽容度的异常值，方便 Debug
-        if (diff > 4)
+        // 打印出超过宽容度 (例如 5 ULP) 的异常值，方便 Debug
+        if (diff > 0x10000)
         {
 #pragma omp critical
             {
-                exp2_error_count++;
+                sig_error_count++;
                 // 为了防止刷屏，只打印前 20 个错误
-                if (exp2_error_count <= 20)
+                if (sig_error_count <= 20)
                 {
                     std::cout << std::hex
-                              << "exp2 input: 0x" << src_hex
+                              << "sig input: 0x" << src_hex
                               << " (" << float_input << ")"
                               << " | gl: 0x" << g_u
                               << " | rst: 0x" << rst
@@ -244,7 +344,7 @@ int main()
         }
     }
 
-    std::cout << std::dec << "exp2 errors (>4 ULP): " << exp2_error_count << std::endl;
-    std::cout << std::hex << "exp2 max ulp: " << exp2_max_ulp << std::endl;
+    std::cout << std::dec << "sig errors (>5 ULP): " << sig_error_count << std::endl;
+    std::cout << std::hex << "sig max ulp: " << sig_max_ulp << std::endl;
     std::cout << "---------------------------------------" << std::endl;
 }

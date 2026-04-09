@@ -20,7 +20,7 @@ uint32_t getSigTableId(const uint32_t exp, const uint32_t mant, uint32_t &delta,
         break;
     case 127: // exp == 0
         delta_bits = FP32_MANT_WIDTH - 4;
-        t_idx = 32 + (mant >> 7); // 4-bit table, so need the upper 4-bit of the mantissa
+        t_idx = 32 + (mant >> delta_bits); // 4-bit table, so need the upper 4-bit of the mantissa
         delta = mant & N_BIT_1(delta_bits);
         break;
     default: // exp < 127
@@ -32,6 +32,33 @@ uint32_t getSigTableId(const uint32_t exp, const uint32_t mant, uint32_t &delta,
     }
 
     return t_idx;
+}
+
+void cvtToFix(uint32_t exp, uint32_t mant, int32_t &newExp, uint32_t &decimal, bool &isINF)
+{
+    // convert the floating point to (M + 0.N)
+    int32_t expNoBias = exp - 127;
+    uint32_t fixPoint = 1 << FP32_MANT_WIDTH | mant;
+    if (expNoBias >= 0)
+    {
+        if (expNoBias >= 8) // overflow on 8bits exp, set to INF value
+            isINF = true;
+        else
+        {
+            newExp = ((fixPoint << expNoBias) >> FP32_MANT_WIDTH) & 0xff;
+            decimal = (fixPoint << expNoBias) & N_BIT_1(FP32_MANT_WIDTH);
+            if (newExp >= 128) // as 128+127 >=255 which is an INF number
+                isINF = true;
+        }
+    }
+    else if (expNoBias <= -32)
+        decimal = 0;
+    else
+        decimal = (fixPoint >> -expNoBias) & N_BIT_1(FP32_MANT_WIDTH);
+
+    // for sigmoid, we always use negative number
+    newExp = decimal != 0 ? -newExp - 1 : -newExp;
+    decimal = decimal != 0 ? ((~decimal) & N_BIT_1(FP32_MANT_WIDTH)) + 1 : 0;
 }
 
 uint32_t fp32_sig(uint32_t src)
@@ -73,6 +100,8 @@ uint32_t fp32_sig(uint32_t src)
     int32_t exp = (nonsign >> FP32_MANT_WIDTH) & N_BIT_1(FP32_EXP_WIDTH);
     uint32_t mant = nonsign & N_BIT_1(FP32_MANT_WIDTH);
     int32_t expNoBias = (int32_t)exp - 127;
+    int32_t newExp = 0;
+    bool isINF = false;
     if (exp == 0) // denorm handle
     {
         uint32_t lz = __builtin_clz(mant);
@@ -97,7 +126,64 @@ uint32_t fp32_sig(uint32_t src)
         lut_id = getSigTableId(exp, mant, delta, delta_bit);
         table = FP32_SIG_TABLE[lut_id];
     }
-    else // use exp table
+    else // use exp table exp >=130
     {
+        is_exp = true;
+        uint32_t decimal = 0;
+        cvtToFix(exp, mant, newExp, decimal, isINF);
+        delta_bit = FP32_MANT_WIDTH - EXP_TABLE_BIT_WIDTH;
+        lut_id = (decimal >> delta_bit) & N_BIT_1(EXP_TABLE_BIT_WIDTH);
+        delta = decimal & N_BIT_1(delta_bit);
+        table = FP32_EXP2_TABLE[lut_id];
     }
+    table_res = SIG_fix_multi(table.c0, table.c1_abs, table.c2, delta, pre.A_pre, pre.B_pre, pre.C_pre, delta_bit, is_exp);
+    if (exp < 116)
+    {
+        return 0x3f000000;
+    }
+    uint32_t wid_frac_A = pre.A_pre - is_exp;
+    uint32_t wid_frac_BXdel = pre.B_pre - is_exp + FP32_MANT_WIDTH;
+    uint32_t wid_frac_CXdel = pre.C_pre + FP32_MANT_WIDTH * 2;
+    uint32_t max_width = std::max(std::max(wid_frac_BXdel, wid_frac_CXdel), wid_frac_A);
+
+    uint32_t rst = 0;
+
+    // 💡 严格解耦后处理逻辑
+    if (!is_exp)
+    {
+        // =====================================
+        // 路径 A: 走的是 SIG_TABLE (结果在 0.5~1 之间)
+        // =====================================
+        if (sign == 0)
+        {
+            // 正数输入：计算 1.0 - table_res
+            // (1ULL << max_width) 完美代表定点数的 1.0，不会有任何位宽截断！
+            table_res = (1ULL << max_width) - table_res;
+        }
+
+        // SIG 表的结果永远视为基准阶码 127
+        rst = table_res != 0 ? NormalizeToFP32(table_res, 127, max_width) : 0;
+    }
+    else
+    {
+        // =====================================
+        // 路径 B: 走的是 EXP_TABLE (处理 |x| >= 8.0 的长尾)
+        // =====================================
+        if (sign == 0)
+        {
+            // 正数输入：计算 1.0 - e^{-x}
+            // 因为走的是 EXP 表，e^{-x} 必须根据 newExp 右移对齐
+            uint64_t shifted_res = (-newExp >= 60) ? 0 : (table_res >> -newExp);
+            table_res = (1ULL << max_width) - shifted_res;
+
+            rst = table_res != 0 ? NormalizeToFP32(table_res, 127, max_width) : 0;
+        }
+        else
+        {
+            // 负数输入：直接计算 e^x
+            rst = table_res != 0 ? NormalizeToFP32(table_res, newExp + 127, max_width) : 0;
+        }
+    }
+
+    return rst;
 }
