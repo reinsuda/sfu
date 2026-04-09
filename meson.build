@@ -9,12 +9,13 @@ inc_dir = include_directories('coeff', 'common')
 # 2. 定义源文件
 # 列出 src 目录下的所有 .cpp 文件
 sfu_srcs = [
-  'src/cos.cpp',
   'src/log2.cpp',
   'src/rcp.cpp',
   'src/rsq.cpp',
   'src/sin.cpp',
-  'src/sqrt.cpp'
+  'src/sqrt.cpp',
+  'src/exp2.cpp',
+  'src/sig.cpp'
 ]
 
 # 3. 编译核心库

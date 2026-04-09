@@ -15,7 +15,7 @@ typedef unsigned __int128 uint128_t;
 
 #define PI 3.1415927
 
-#define max(a, b) (((a) > (b)) ? (a) : (b))
+// #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define BIT_N(value, pos) ((value >> (pos)) & 0x1)
 #define N_BIT_1(N) (((uint64_t)1 << (N)) - 1)
 
@@ -299,8 +299,8 @@ static uint64_t SQRT_fix_multi(uint32_t A, uint32_t B, uint32_t C, uint32_t delt
     uint64_t sign_delta = (signed_delta < 0) ? 1 : 0;
     uint64_t ABS_delta = sign_delta ? (~signed_delta & ((1 << frac_bits) - 1)) + 1 : signed_delta & ((1 << frac_bits) - 1);
 
-    uint64_t wid_frac_BXdel = wid_B + wid_delta;
-    uint64_t wid_frac_CXdel = wid_C + wid_delta + wid_delta;
+    uint32_t wid_frac_BXdel = wid_B + wid_delta;
+    uint32_t wid_frac_CXdel = wid_C + wid_delta + wid_delta;
 
     // 4. 定义各项的基础符号 (SQRT 展开: A正, B正, C负)
     uint64_t sign_A = 0;
@@ -311,7 +311,7 @@ static uint64_t SQRT_fix_multi(uint32_t A, uint32_t B, uint32_t C, uint32_t delt
     uint64_t final_sign_B = sign_delta ^ sign_B;
 
     // 5. 确定最大的对齐位宽
-    uint64_t max_width = max(max(wid_frac_BXdel, wid_frac_CXdel), (uint64_t)wid_A);
+    uint32_t max_width = std::max(std::max(wid_frac_BXdel, wid_frac_CXdel), wid_A);
 
     return fix_multi((uint64_t)A, B, C, ABS_delta,
                      max_width - wid_A,
@@ -336,8 +336,8 @@ static uint64_t LOG2_fix_multi(uint32_t A, uint32_t B, uint32_t C, uint32_t delt
     uint64_t sign_delta = (signed_delta < 0) ? 1 : 0;
     uint64_t ABS_delta = sign_delta ? (~signed_delta & ((1 << frac_bits) - 1)) + 1 : signed_delta & ((1 << frac_bits) - 1);
 
-    uint64_t wid_frac_BXdel = wid_B + wid_delta;
-    uint64_t wid_frac_CXdel = wid_C + wid_delta + wid_delta;
+    uint32_t wid_frac_BXdel = wid_B + wid_delta;
+    uint32_t wid_frac_CXdel = wid_C + wid_delta + wid_delta;
 
     // 4. 定义各项的基础符号 (SQRT 展开: A正, B正, C负)
     uint64_t sign_A = 0;
@@ -348,7 +348,7 @@ static uint64_t LOG2_fix_multi(uint32_t A, uint32_t B, uint32_t C, uint32_t delt
     uint64_t final_sign_B = sign_delta ^ sign_B;
 
     // 5. 确定最大的对齐位宽
-    uint64_t max_width = max(max(wid_frac_BXdel, wid_frac_CXdel), (uint64_t)wid_A);
+    uint32_t max_width = std::max(std::max(wid_frac_BXdel, wid_frac_CXdel), wid_A);
 
     return fix_multi((uint64_t)A, B, C, ABS_delta,
                      max_width - wid_A,
@@ -374,8 +374,8 @@ static uint64_t RSQRT_fix_multi(uint32_t A, uint32_t B, uint32_t C, uint32_t del
     uint64_t sign_delta = (signed_delta < 0) ? 1 : 0;
     uint64_t ABS_delta = sign_delta ? (~signed_delta & ((1 << frac_bits) - 1)) + 1 : signed_delta & ((1 << frac_bits) - 1);
 
-    uint64_t wid_frac_BXdel = wid_B + wid_delta;
-    uint64_t wid_frac_CXdel = wid_C + wid_delta + wid_delta;
+    uint32_t wid_frac_BXdel = wid_B + wid_delta;
+    uint32_t wid_frac_CXdel = wid_C + wid_delta + wid_delta;
 
     // 4. 定义各项的基础符号 (SQRT 展开: A正, B正, C负)
     uint64_t sign_A = 0;
@@ -386,7 +386,7 @@ static uint64_t RSQRT_fix_multi(uint32_t A, uint32_t B, uint32_t C, uint32_t del
     uint64_t final_sign_B = sign_delta ^ sign_B;
 
     // 5. 确定最大的对齐位宽
-    uint64_t max_width = max(max(wid_frac_BXdel, wid_frac_CXdel), (uint64_t)wid_A);
+    uint64_t max_width = std::max(std::max(wid_frac_BXdel, wid_frac_CXdel), wid_A);
 
     return fix_multi((uint64_t)A, B, C, ABS_delta,
                      max_width - wid_A,
@@ -407,9 +407,9 @@ static uint64_t RCP_fix_multi(uint32_t A, uint32_t B, uint32_t C, uint32_t delta
     uint64_t sign_delta = (delta >> sign_delta_pos) & 0x1 ? 0 : 1;                                                      // get delta sign
     uint64_t ABS_delta = sign_delta ? (~delta & ((1 << sign_delta_pos) - 1)) + 1 : delta & ((1 << sign_delta_pos) - 1); // non sign delta
 
-    uint64_t wid_B_mul_del = wid_B + wid_delta;                             // bx width
-    uint64_t wid_C_mul_del_del = wid_C + wid_delta + wid_delta;             // cx^2 width
-    uint64_t max_width = max(max(wid_B_mul_del, wid_C_mul_del_del), wid_A); // max width
+    uint32_t wid_B_mul_del = wid_B + wid_delta;                                       // bx width
+    uint32_t wid_C_mul_del_del = wid_C + wid_delta + wid_delta;                       // cx^2 width
+    uint32_t max_width = std::max(std::max(wid_B_mul_del, wid_C_mul_del_del), wid_A); // max width
     uint64_t sign_B = 1;
     uint64_t sign_C = 0;
     return fix_multi((uint64_t)A, B, C, ABS_delta, max_width - wid_A, max_width - wid_B_mul_del, 0, 0, sign_delta ^ sign_B, sign_C);
@@ -503,8 +503,8 @@ static uint64_t SIN_fix_multi(uint64_t A, uint32_t B, uint32_t C, uint32_t delta
         ABS_delta <<= (-tempShift);
 
     // 💡 核心：基础位宽绝对不包含 moreShift，保证 max_width 恒定！
-    uint64_t wid_frac_BXdel = (int32_t)wid_B - 3 + wid_delta;
-    uint64_t wid_frac_CXdel = (int32_t)wid_C - 5 + wid_delta + wid_delta;
+    uint32_t wid_frac_BXdel = (int32_t)wid_B - 3 + wid_delta;
+    uint32_t wid_frac_CXdel = (int32_t)wid_C - 5 + wid_delta + wid_delta;
 
     uint64_t sign_A = 0;
     uint64_t sign_B = 0;
@@ -513,7 +513,7 @@ static uint64_t SIN_fix_multi(uint64_t A, uint32_t B, uint32_t C, uint32_t delta
     uint64_t final_sign_B = sign_delta ^ sign_B;
 
     // 算出来的 max_width 将会完美定死在 51 (若A=27, B=18, C=10)
-    uint64_t max_width = max(max(wid_frac_BXdel, wid_frac_CXdel), (uint64_t)wid_A);
+    uint32_t max_width = std::max(std::max(wid_frac_BXdel, wid_frac_CXdel), wid_A);
     // 你的硬件断言
     // assert(max_width < 60);
 
@@ -524,9 +524,45 @@ static uint64_t SIN_fix_multi(uint64_t A, uint32_t B, uint32_t C, uint32_t delta
                      sign_A, final_sign_B, sign_C, (uint32_t)moreShift);
 }
 
+static uint64_t EXP_fix_multi(uint32_t A, uint32_t B, uint32_t C, uint32_t delta,
+                              uint32_t wid_A, uint32_t wid_B, uint32_t wid_C, bool rounding = true,
+                              uint32_t wid_delta = 23) // a + bx + cx^2
+{
+    // 1. 解析 delta 的符号位与绝对值 (保留原有逻辑)
+    uint64_t sign_delta = (delta >> 15) & 0x1 ? 0 : 1;
+    uint64_t ABS_delta = sign_delta ? (~delta & ((1 << 15) - 1)) + 1 : delta & ((1 << 15) - 1);
+
+    // 2. 计算各项的小数位宽 (Fractional width)
+    uint64_t wid_frac_A = wid_A - 1;                         // A 的小数位宽 (1个符号/整数位)
+    uint64_t wid_frac_BXdel = wid_B - 1 + wid_delta;         // B*delta 的小数位宽
+    uint64_t wid_frac_CXdel = wid_C + wid_delta + wid_delta; // C*delta^2 的小数位宽
+
+    // 3. 找到最大的小数位宽（通常是 59），将所有结果对齐到该小数点 N.59
+    uint64_t max_width = std::max(std::max(wid_frac_BXdel, wid_frac_CXdel), wid_frac_A);
+
+    assert(max_width < 62);
+    // 4. 计算为了对齐目标小数点需要进行的左移位数
+    uint32_t A_shift_w = max_width - wid_frac_A;
+    uint32_t B_shift_w = max_width - wid_frac_BXdel;
+    uint32_t c_shift_w = max_width - wid_frac_CXdel;
+
+    // 5. 确定最终项的符号
+    // A 是 1.24 且为正数，C_mul 是 delta^2 必定为正，只有 B 的项取决于 delta
+    uint32_t a_sign = 0;
+    uint32_t b_sign = sign_delta; // B 项的符号继承自 delta
+    uint32_t c_sign = 0;
+
+    // 6. 调用底层定点数乘加树 (moreShift 在 EXP 查表中固定为 0)
+    return fix_multi((uint64_t)A, B, C, ABS_delta,
+                     A_shift_w, B_shift_w, c_shift_w,
+                     a_sign, b_sign, c_sign, 0);
+}
+
 uint32_t fp32_rcp(uint32_t src);
 uint32_t fp32_sqrt(uint32_t src);
 uint32_t fp32_rsq(uint32_t src);
 uint32_t fp32_log2(uint32_t src);
+uint32_t fp32_exp2(uint32_t src);
+uint32_t fp32_sig(uint32_t src);
 uint32_t fp32_sin(uint32_t src, bool ftz);
 uint32_t fp32_cos(uint32_t src, bool ftz);

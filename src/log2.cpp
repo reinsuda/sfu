@@ -53,9 +53,9 @@ uint32_t fp32_log2(uint32_t src)
     uint64_t table_res = LOG2_fix_multi(table.c0, table.c1_abs, c2_abs, delta, pre.A_pre, pre.B_pre, pre.C_pre, 1);
 
     // conver to 0.23
-    uint64_t wid_frac_BXdel = pre.B_pre + FP32_MANT_WIDTH;
-    uint64_t wid_frac_CXdel = pre.C_pre + (2 * FP32_MANT_WIDTH);
-    uint64_t decimal_bits = max(max(wid_frac_BXdel, wid_frac_CXdel), (uint64_t)pre.A_pre);
+    uint32_t wid_frac_BXdel = pre.B_pre + FP32_MANT_WIDTH;
+    uint32_t wid_frac_CXdel = pre.C_pre + (2 * FP32_MANT_WIDTH);
+    uint32_t decimal_bits = std::max(std::max(wid_frac_BXdel, wid_frac_CXdel), pre.A_pre);
 
     uint64_t resFix;
     uint32_t resSign;
