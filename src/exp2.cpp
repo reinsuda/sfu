@@ -42,14 +42,14 @@ uint32_t fp32_exp2(uint32_t src)
 
     if (expNoBias >= 0)
     {
-        if (expNoBias >= 8)                        // overflow on 8bits exp, set to INF value
-            return sign ? 0x00000000 : 0x7F800000; // 💡 负数下溢给 0，正数溢出给 INF
+        if (expNoBias >= 8) // overflow on 8bits exp, set to INF value
+            return sign ? 0x00000000 : 0x7F800000;
         else
         {
             newExp = ((sig << expNoBias) >> 23) & 0xff;
             decimal = (sig << expNoBias) & 0x7fffff; // N_BIT_1(23)
-            if (newExp >= 128)
-                return sign ? 0x00000000 : 0x7F800000; // 💡 同上
+            if (newExp > 128 && !sign)
+                return sign ? 0x00000000 : 0x7F800000;
         }
     }
     else if (expNoBias <= -32)
@@ -60,7 +60,6 @@ uint32_t fp32_exp2(uint32_t src)
     {
         decimal = (sig >> -expNoBias) & 0x7fffff;
     }
-
     if (sign)
     {
         newExp = decimal != 0 ? -newExp - 1 : -newExp;
