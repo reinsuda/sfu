@@ -9,8 +9,8 @@ uint32_t getSigTableId(const uint32_t exp, const uint32_t mant, uint32_t &delta,
     switch (exp)
     {
     case 130:
-        delta_bits = FP32_MANT_WIDTH - 4;
-        t_idx = 32 + 16 + 32 + 64 + (mant >> delta_bits); // 4-bit table, so need the upper 6-bit of the mantissa
+        delta_bits = FP32_MANT_WIDTH - 5;
+        t_idx = 32 + 16 + 32 + 64 + (mant >> delta_bits); // 5-bit table, so need the upper 6-bit of the mantissa
         delta = mant & N_BIT_1(delta_bits);
         break;
     case 129:
