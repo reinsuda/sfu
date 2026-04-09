@@ -8,6 +8,11 @@ uint32_t getSigTableId(const uint32_t exp, const uint32_t mant, uint32_t &delta,
 
     switch (exp)
     {
+    case 130:
+        delta_bits = FP32_MANT_WIDTH - 4;
+        t_idx = 32 + 16 + 32 + 64 + (mant >> delta_bits); // 4-bit table, so need the upper 6-bit of the mantissa
+        delta = mant & N_BIT_1(delta_bits);
+        break;
     case 129:
         delta_bits = FP32_MANT_WIDTH - 6;
         t_idx = 32 + 16 + 32 + (mant >> delta_bits); // 6-bit table, so need the upper 6-bit of the mantissa
@@ -65,9 +70,9 @@ uint32_t fp32_sig(uint32_t src)
 {
 
     Precision pre;
-    pre.A_pre = 24;
+    pre.A_pre = 27;
     pre.B_pre = 18;
-    pre.C_pre = 8;
+    pre.C_pre = 13;
     // special number handle
     uint32_t sign = src & 0x80000000;
     uint32_t nonsign = sign ^ src;
@@ -121,7 +126,7 @@ uint32_t fp32_sig(uint32_t src)
     bool is_exp = false;
     rcp_entry_t table;
     uint64_t table_res;
-    if (exp < 130)
+    if (exp <= 130)
     {
         lut_id = getSigTableId(exp, mant, delta, delta_bit);
         table = FP32_SIG_TABLE[lut_id];
