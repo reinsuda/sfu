@@ -872,34 +872,141 @@ final_table = compute_coeffs_exp2_128(t_width, p_width, q_width)
 save_to_files(final_table, t_width+1, p_width+1, q_width+1, "exp2_coeffs.h", "FP32_EXP2_TABLE", 128)
 
 
+# def compute_coeffs_sigmoid_multi_region(t, p, q):
+#     """
+#     t: C0 的小数位宽
+#     p: C1 的小数位宽
+#     q: C2 的小数位宽
+#     针对 Sigmoid 在 [0, 16) 区间的多区间非均匀分段优化 (共 160 段)
+#     """
+#     def sigmoid(x):
+#         return 1.0 / (1.0 + np.exp(-x))
+
+#     # 定义各个区间：(起点, 终点, 段数, 区间名称)
+#     regions = [
+#         (0.0, 1.0, 64, "exp < 0  [0, 1)"),
+#         (1.0, 2.0, 32, "exp == 0 [1, 2)"),
+#         (2.0, 4.0, 32, "exp == 1 [2, 4)"),
+#         (4.0, 8.0, 32, "exp == 2 [4, 8)"),
+#         (8.0, 16.0, 32,"exp == 3 [8, 16)")
+#     ]
+
+#     errmax = 0
+#     results = []
+#     global_seg = 0
+
+#     print(f"{'Segment':<8} | {'Region':<16} | {'C0 (Hex)':<12} | {'C1 (Hex)':<12} | {'C2 (Hex)':<12} | {'Error':<10}")
+#     print("-" * 85)
+
+#     for start, end, num_segments, name in regions:
+#         dx_max = (end - start) / num_segments
+        
+#         for i in range(num_segments):
+#             # 1. 确定当前段的【中心点】
+#             m_center = start + i * dx_max + (dx_max / 2.0)
+            
+#             # 2. 采样范围：围绕中心点的相对偏移量 delta
+#             n = 2**16 
+#             delta_nodes = np.linspace(-dx_max / 2.0, dx_max / 2.0, n)
+            
+#             # 3. 计算真实的 Y 值
+#             y_nodes = sigmoid(m_center + delta_nodes)
+
+#             # 4. 初始拟合 (二阶多项式)
+#             poly_coeffs = np.polyfit(delta_nodes, y_nodes, 2)
+#             a2_raw, a1_raw = poly_coeffs[0], poly_coeffs[1]
+
+#             # 5. 独立量化 C1 和 C2
+#             # Sigmoid 的一阶导数恒为正 (C1 > 0)
+#             # Sigmoid 在 x>0 时的二阶导数恒为负 (C2 < 0)，转为定点数时会自动按补码保存
+#             C1 = np.round(a1_raw * (2**p)) * (2**-p)
+#             C2 = np.round(a2_raw * (2**q)) * (2**-q) 
+
+#             # 6. 平衡常数项 C0 (Minimax 平移)
+#             rem_y = sigmoid(m_center + delta_nodes) - (C1 * delta_nodes + C2 * (delta_nodes**2))
+#             a0_minimax = (np.max(rem_y) + np.min(rem_y)) / 2.0
+#             C0 = np.round(a0_minimax * (2**t)) * (2**-t)
+
+#             # 7. 误差计算
+#             test_delta = np.linspace(-dx_max / 2.0, dx_max / 2.0, 500)
+#             actual_y = sigmoid(m_center + test_delta)
+#             approx_y = C0 + C1 * test_delta + C2 * (test_delta**2)
+#             err = np.max(np.abs(actual_y - approx_y))
+
+#             if err > errmax:
+#                 errmax = err
+            
+#             c0_int = int(round(C0 * 2**t))
+#             c1_int = int(round(C1 * 2**p))
+#             c2_int = int(round(C2 * 2**q))
+
+#             results.append({
+#                 "global_seg": global_seg,
+#                 "region": name,
+#                 "C0": C0, "C1": C1, "C2": C2,
+#                 "C0_int": c0_int, "C1_int": c1_int, "C2_int": c2_int,
+#                 "err": err
+#             })
+
+#             # 打印每个区间的头尾部分以便于观察
+#             if i < 2 or i == num_segments - 1:
+#                 # 掩码扩展以处理符号位和整数位
+#                 mask_t = (1 << (t + 2)) - 1
+#                 mask_p = (1 << (p + 2)) - 1
+#                 mask_q = (1 << (q + 2)) - 1
+
+#                 c0_display = c0_int & mask_t
+#                 c1_display = c1_int & mask_p 
+#                 c2_display = c2_int & mask_q 
+                
+#                 print(f"{global_seg:<8} | {name:<16} | {c0_display:<12x} | {c1_display:<12x} | {c2_display:<12x} | {err:.2e}")
+            
+#             global_seg += 1
+        
+#         # 打印区间分割线
+#         print("-" * 85)
+
+#     good_bits = np.abs(np.log2(errmax)) if errmax > 0 else 0
+#     print(f"总计分段数: {global_seg}")
+#     print(f"最大绝对误差 (MAE): {errmax:.12e}")
+#     print(f"等效精度 (Good Bits): {good_bits:.2f} bits\n")
+    
+#     return results
+
 def compute_coeffs_sigmoid_multi_region(t, p, q):
     """
     t: C0 的小数位宽
-    p: C1 的小数位宽
-    q: C2 的小数位宽
+    p: C1 的基础小数位宽
+    q: C2 的基础小数位宽
     针对 Sigmoid 在 [0, 16) 区间的多区间非均匀分段优化 (共 160 段)
     """
     def sigmoid(x):
         return 1.0 / (1.0 + np.exp(-x))
 
-    # 定义各个区间：(起点, 终点, 段数, 区间名称)
+    # 定义各个区间：(起点, 终点, 段数, 区间名称, 硬件指数跨域补偿 shift)
+    # 核心原理：硬件在 exp=1, 2, 3 时，尾数代表的实际 step 放大了 2^shift 倍。
     regions = [
-        (0.0, 1.0, 32, "exp < 0  [0, 1)"),
-        (1.0, 2.0, 16, "exp == 0 [1, 2)"),
-        (2.0, 4.0, 32, "exp == 1 [2, 4)"),
-        (4.0, 8.0, 64, "exp == 2 [4, 8)"),
-        (8.0, 16.0, 32,"exp == 3 [8, 16)")
+        (0.0, 1.0, 64, "exp < 0  [0, 1)", 0),
+        (1.0, 2.0, 32, "exp == 0 [1, 2)", 0),
+        (2.0, 4.0, 32, "exp == 1 [2, 4)", 1),
+        (4.0, 8.0, 32, "exp == 2 [4, 8)", 2),
+        (8.0, 16.0, 32,"exp == 3 [8, 16)", 3)
     ]
 
     errmax = 0
     results = []
     global_seg = 0
 
-    print(f"{'Segment':<8} | {'Region':<16} | {'C0 (Hex)':<12} | {'C1 (Hex)':<12} | {'C2 (Hex)':<12} | {'Error':<10}")
+    print(f"{'Seg':<5} | {'Region':<16} | {'C0 (Hex)':<12} | {'C1 (Hex)':<12} | {'C2 (Hex)':<12} | {'Error':<10}")
     print("-" * 85)
 
-    for start, end, num_segments, name in regions:
+    for start, end, num_segments, name, exp_shift in regions:
         dx_max = (end - start) / num_segments
+        
+        # 【关键修复】：根据指数跨域，动态补偿 C1 和 C2 的定点数量化比例
+        # 每跨越一个指数域，C1 放大 2 倍，C2 放大 4 倍
+        cur_p = p + exp_shift
+        cur_q = q + 2 * exp_shift
         
         for i in range(num_segments):
             # 1. 确定当前段的【中心点】
@@ -916,11 +1023,9 @@ def compute_coeffs_sigmoid_multi_region(t, p, q):
             poly_coeffs = np.polyfit(delta_nodes, y_nodes, 2)
             a2_raw, a1_raw = poly_coeffs[0], poly_coeffs[1]
 
-            # 5. 独立量化 C1 和 C2
-            # Sigmoid 的一阶导数恒为正 (C1 > 0)
-            # Sigmoid 在 x>0 时的二阶导数恒为负 (C2 < 0)，转为定点数时会自动按补码保存
-            C1 = np.round(a1_raw * (2**p)) * (2**-p)
-            C2 = np.round(a2_raw * (2**q)) * (2**-q) 
+            # 5. 独立量化 C1 和 C2 (使用补偿后的 cur_p 和 cur_q)
+            C1 = np.round(a1_raw * (2**cur_p)) * (2**-cur_p)
+            C2 = np.round(a2_raw * (2**cur_q)) * (2**-cur_q) 
 
             # 6. 平衡常数项 C0 (Minimax 平移)
             rem_y = sigmoid(m_center + delta_nodes) - (C1 * delta_nodes + C2 * (delta_nodes**2))
@@ -936,9 +1041,10 @@ def compute_coeffs_sigmoid_multi_region(t, p, q):
             if err > errmax:
                 errmax = err
             
+            # 8. 转换为存入硬件的整型数值 (同样必须使用 cur_p 和 cur_q)
             c0_int = int(round(C0 * 2**t))
-            c1_int = int(round(C1 * 2**p))
-            c2_int = int(round(C2 * 2**q))
+            c1_int = int(round(C1 * 2**cur_p)) 
+            c2_int = int(round(C2 * 2**cur_q)) 
 
             results.append({
                 "global_seg": global_seg,
@@ -950,16 +1056,16 @@ def compute_coeffs_sigmoid_multi_region(t, p, q):
 
             # 打印每个区间的头尾部分以便于观察
             if i < 2 or i == num_segments - 1:
-                # 掩码扩展以处理符号位和整数位
+                # 掩码扩展以处理符号位和整数位 (为了显示对齐)
                 mask_t = (1 << (t + 2)) - 1
-                mask_p = (1 << (p + 2)) - 1
-                mask_q = (1 << (q + 2)) - 1
+                mask_p = (1 << (p + 4)) - 1 # 稍微加大 mask 防止高位截断显示
+                mask_q = (1 << (q + 4)) - 1
 
                 c0_display = c0_int & mask_t
-                c1_display = c1_int & mask_p 
+                c1_display = abs(c1_int) & mask_p 
                 c2_display = c2_int & mask_q 
                 
-                print(f"{global_seg:<8} | {name:<16} | {c0_display:<12x} | {c1_display:<12x} | {c2_display:<12x} | {err:.2e}")
+                print(f"{global_seg:<5} | {name:<16} | {c0_display:<12x} | {c1_display:<12x} | {c2_display:<12x} | {err:.2e}")
             
             global_seg += 1
         
@@ -974,5 +1080,5 @@ def compute_coeffs_sigmoid_multi_region(t, p, q):
     return results
 
 t_width, p_width, q_width = 27, 18, 13
-final_table = compute_coeffs_exp2_128(t_width, p_width, q_width)
-save_to_files(final_table, t_width+1, p_width+1, q_width+1, "sig_coeffs.h", "FP32_SIG_TABLE", 176)
+final_table = compute_coeffs_sigmoid_multi_region(t_width, p_width, q_width)
+save_to_files(final_table, t_width+1, p_width+1, q_width+1, "sig_coeffs.h", "FP32_SIG_TABLE", 192)

@@ -7,8 +7,260 @@
 #include <iostream>
 #include <omp.h>
 
+void test_sig()
+{
+    std::cout << "--- Start fp32_sig exhaustive test ---" << std::endl;
+
+    uint32_t sig_max_ulp = 0;
+    uint32_t sig_error_count = 0;
+    uint32_t sig_max_err_input = 0;
+    uint32_t sig_max_err_gld = 0;
+    uint32_t sig_max_err_rst = 0;
+
+#pragma omp parallel for
+    for (size_t src = 0; src < 0x100000000; src++)
+    {
+        uint32_t src_hex = (uint32_t)src;
+        float float_input = *reinterpret_cast<float *>(&src_hex);
+
+        // ==========================================
+        // 1. 获取 CPU 双精度计算的 Golden 结果
+        // ==========================================
+        // 转为 double 算真值，再截断回 float，保证 Golden 的完美精度
+        double d_in = (double)float_input;
+        float g_f = (float)(1.0 / (1.0 + std::exp(-d_in)));
+        uint32_t g_u = *reinterpret_cast<uint32_t *>(&g_f);
+
+        // ==========================================
+        // 2. 获取你的硬件仿真结果
+        // ==========================================
+        uint32_t rst = fp32_sig(src_hex);
+
+        // ==========================================
+        // 3. 💡 硬件行为对齐滤镜 (Filters)
+        // ==========================================
+
+        // 滤镜 A: NaN 屏蔽
+        bool is_in_nan = ((src_hex & 0x7F800000) == 0x7F800000) && ((src_hex & 0x007FFFFF) != 0);
+        if (is_in_nan)
+            continue;
+
+        // 滤镜 B: Sigmoid 特有的饱和区双向强制对齐 (Saturation Bypass)
+        // 假设你的硬件在 |x| >= 16.0 时直接输出 1.0 或 0.0 (请根据你真实的硬件代码阈值修改！)
+        // if (float_input >= 16.0f)
+        // {
+        //     g_u = 0x3F800000; // 强行让 CPU 在正饱和区输出 1.0
+        // }
+        // else if (float_input <= -16.0f)
+        // {
+        //     g_u = 0x00000000; // 强行让 CPU 在负饱和区输出 0.0
+        // }
+
+        // // 滤镜 C: 双向非规格化数冲刷到零 (FTZ)
+        // // 只要阶码是 0 (即 bits 23-30 全为 0)，统统强行刷成纯 0！
+        // if ((g_u & 0x7F800000) == 0)
+        //     g_u = 0x00000000;
+        // if ((rst & 0x7F800000) == 0)
+        //     rst = 0x00000000;
+
+        // // 滤镜 D: 统一冲刷 -0.0 为 +0.0
+        // if (g_u == 0x80000000)
+        //     g_u = 0x00000000;
+        // if (rst == 0x80000000)
+        //     rst = 0x00000000;
+
+        // ==========================================
+
+        // 4. 计算 ULP Diff
+        uint32_t diff = g_u > rst ? g_u - rst : rst - g_u;
+
+        // 5. 统计与报错逻辑 (容忍最大 4~5 ULP 的误差)
+        if (diff > sig_max_ulp)
+        {
+            // 💡 修复 OpenMP 数据竞争：使用 critical 区块安全更新最大值
+#pragma omp critical
+            {
+                if (diff > sig_max_ulp)
+                {
+                    sig_max_ulp = diff;
+                    sig_max_err_input = src_hex;
+                    sig_max_err_gld = g_u;
+                    sig_max_err_rst = rst;
+                }
+            }
+        }
+
+        // 打印出超过宽容度 (例如 5 ULP) 的异常值，方便 Debug
+        if (diff > 0x10000)
+        {
+#pragma omp critical
+            {
+                sig_error_count++;
+                // 为了防止刷屏，只打印前 20 个错误
+                if (sig_error_count <= 20)
+                {
+                    std::cout << std::hex
+                              << "sig input: 0x" << src_hex
+                              << " (" << float_input << ")"
+                              << " | gl: 0x" << g_u
+                              << " | rst: 0x" << rst
+                              << std::dec << " | diff: " << diff
+                              << std::endl;
+                }
+            }
+        }
+    }
+
+    std::cout << std::dec << "sig errors (>5 ULP): " << sig_error_count << std::endl;
+    std::cout << std::hex << "sig max ulp: " << sig_max_ulp << " input: " << sig_max_err_input << " gl: " << sig_max_err_gld << " rst: " << sig_max_err_rst << std::endl;
+    std::cout << "---------------------------------------" << std::endl;
+}
+
+void test_sig_partral()
+{
+    std::cout << "--- Start fp32_sig exhaustive test ---" << std::endl;
+
+    uint32_t sig_max_ulp = 0;
+    uint32_t sig_error_count = 0;
+    uint32_t sig_max_err_input = 0;
+    uint32_t sig_max_err_gld = 0;
+    uint32_t sig_max_err_rst = 0;
+
+    for (size_t exp = 131; exp < 132; exp++)
+    {
+#pragma omp parallel for
+        for (size_t mant = 0; mant < 0x7fffff; mant++)
+        {
+            uint32_t src_hex = ((uint32_t)exp << FP32_MANT_WIDTH) | (uint32_t)mant;
+            float float_input = *reinterpret_cast<float *>(&src_hex);
+
+            // ==========================================
+            // 1. 获取 CPU 双精度计算的 Golden 结果
+            // ==========================================
+            // 转为 double 算真值，再截断回 float，保证 Golden 的完美精度
+            double d_in = (double)float_input;
+            float g_f = (float)(1.0 / (1.0 + std::exp(-d_in)));
+            uint32_t g_u = *reinterpret_cast<uint32_t *>(&g_f);
+
+            // ==========================================
+            // 2. 获取你的硬件仿真结果
+            // ==========================================
+            uint32_t rst = fp32_sig(src_hex);
+
+            // ==========================================
+            // 3. 💡 硬件行为对齐滤镜 (Filters)
+            // ==========================================
+
+            // 滤镜 A: NaN 屏蔽
+            bool is_in_nan = ((src_hex & 0x7F800000) == 0x7F800000) && ((src_hex & 0x007FFFFF) != 0);
+            if (is_in_nan)
+                continue;
+
+            // 滤镜 B: Sigmoid 特有的饱和区双向强制对齐 (Saturation Bypass)
+            // 假设你的硬件在 |x| >= 16.0 时直接输出 1.0 或 0.0 (请根据你真实的硬件代码阈值修改！)
+            // if (float_input >= 16.0f)
+            // {
+            //     g_u = 0x3F800000; // 强行让 CPU 在正饱和区输出 1.0
+            // }
+            // else if (float_input <= -16.0f)
+            // {
+            //     g_u = 0x00000000; // 强行让 CPU 在负饱和区输出 0.0
+            // }
+
+            // // 滤镜 C: 双向非规格化数冲刷到零 (FTZ)
+            // // 只要阶码是 0 (即 bits 23-30 全为 0)，统统强行刷成纯 0！
+            // if ((g_u & 0x7F800000) == 0)
+            //     g_u = 0x00000000;
+            // if ((rst & 0x7F800000) == 0)
+            //     rst = 0x00000000;
+
+            // // 滤镜 D: 统一冲刷 -0.0 为 +0.0
+            // if (g_u == 0x80000000)
+            //     g_u = 0x00000000;
+            // if (rst == 0x80000000)
+            //     rst = 0x00000000;
+
+            // ==========================================
+
+            // 4. 计算 ULP Diff
+            uint32_t diff = g_u > rst ? g_u - rst : rst - g_u;
+
+            // 5. 统计与报错逻辑 (容忍最大 4~5 ULP 的误差)
+            if (diff > sig_max_ulp)
+            {
+// 💡 修复 OpenMP 数据竞争：使用 critical 区块安全更新最大值
+#pragma omp critical
+                {
+                    if (diff > sig_max_ulp)
+                    {
+                        sig_max_ulp = diff;
+                        sig_max_err_input = src_hex;
+                        sig_max_err_gld = g_u;
+                        sig_max_err_rst = rst;
+                    }
+                }
+            }
+
+            // 打印出超过宽容度 (例如 5 ULP) 的异常值，方便 Debug
+            if (diff > 0x100)
+            {
+#pragma omp critical
+                {
+                    sig_error_count++;
+                    // 为了防止刷屏，只打印前 20 个错误
+                    if (sig_error_count <= 20)
+                    {
+                        std::cout << std::hex
+                                  << "sig input: 0x" << src_hex
+                                  << " (" << float_input << ")"
+                                  << " | gl: 0x" << g_u
+                                  << " | rst: 0x" << rst
+                                  << " | diff: " << diff
+                                  << std::endl;
+                    }
+                }
+            }
+        }
+    }
+    std::cout << std::dec << "sig errors (>5 ULP): " << sig_error_count << std::endl;
+    std::cout << std::hex << "sig max ulp: " << sig_max_ulp << " input: " << sig_max_err_input << " gl: " << sig_max_err_gld << " rst: " << sig_max_err_rst << std::endl;
+    std::cout << "---------------------------------------" << std::endl;
+}
+
+void test_log2()
+{
+    // log2 test
+    uint32_t max_ulp = 0;
+#pragma omp parallel for
+    for (size_t src = 0x3f7fea33; src < 0x3f802c40; src++)
+    {
+
+        uint32_t src_rcp = (uint32_t)src;
+        float float_input = *reinterpret_cast<float *>(&src_rcp);
+        float g_f = log2(float_input);
+        uint32_t g_u = *reinterpret_cast<uint32_t *>(&g_f);
+        uint32_t rst = fp32_log2(src_rcp);
+        uint32_t diff = g_u > rst ? g_u - rst : rst - g_u;
+        if (diff >= 0x100)
+        {
+            if (!fp32_is_nan(g_u) || !fp32_is_nan(rst))
+                std::cout << std::hex << "log2 input 0x" << src_rcp << " gl: 0x" << g_u << " rst: 0x" << rst << " diff: " << diff << std::endl;
+#pragma omp critical
+            {
+                if (!fp32_is_nan(rst) && diff > max_ulp)
+                {
+                    max_ulp = diff;
+                }
+            }
+        }
+    }
+
+    std::cout << std::hex << "log2 max ulp: " << max_ulp << std::endl;
+}
 int main()
 {
+    // test_log2();
+    test_sig_partral();
     // // rcp test
     // #pragma omp parallel for
     //     for (size_t src = 0; src < 0x100000000; src++)
@@ -70,32 +322,8 @@ int main()
     //         }
     //     }
     //     std::cout << std::hex << "rsqrt max ulp: " << rsqrt_max_ulp << std::endl;
-    //     // log2 test
-    //     uint32_t max_ulp = 0;
-    //     for (size_t src = 0; src < 0x100000000; src++)
-    //     {
 
-    //         uint32_t src_rcp = (uint32_t)src;
-    //         float float_input = *reinterpret_cast<float *>(&src_rcp);
-    //         float g_f = log2(float_input);
-    //         uint32_t g_u = *reinterpret_cast<uint32_t *>(&g_f);
-    //         uint32_t rst = fp32_log2(src_rcp);
-    //         uint32_t diff = g_u > rst ? g_u - rst : rst - g_u;
-    //         if (diff >= 8)
-    //         {
-    //             // if (!fp32_is_nan(g_u) || !fp32_is_nan(rst))
-    //             //     std::cout << std::hex << "log2 input 0x" << src_rcp << " gl: 0x" << g_u << " rst: 0x" << rst << " diff: " << diff << std::endl;
-
-    //             if (!fp32_is_nan(rst) && diff > max_ulp)
-    //             {
-    //                 max_ulp = diff;
-    //             }
-    //         }
-    //     }
-
-    //     std::cout << std::hex << "log2 max ulp: " << max_ulp << std::endl;
-
-    //     // test sin
+    // test sin
     //     uint32_t sin_max_ulp = 0;
     //     uint32_t sin_max_input = 0;
     // #pragma omp parallel for
@@ -115,14 +343,14 @@ int main()
 
     //         uint32_t diff = g_u > rst ? g_u - rst : rst - g_u;
 
-    //         if (diff >= 0x10 && (frac_part != 0.5) && frac_part != -0.5) //  diff != 0x5af2cece 是因为刚好等于π的时候golden会有问题 diff != 0xa50d3132(-π)
+    //         if (diff >= 0x100 && (frac_part != 0.5) && frac_part != -0.5) //  diff != 0x5af2cece 是因为刚好等于π的时候golden会有问题 diff != 0xa50d3132(-π)
     //         {
     //             if (!fp32_is_nan(g_u) || !fp32_is_nan(rst))
     //             {
-    //                 // std::cout << std::hex << "sin input: 0x" << sfu_input
-    //                 //           << " gl: 0x" << g_u
-    //                 //           << " rst: 0x" << rst
-    //                 //           << " diff: " << diff << std::endl;
+    //                 std::cout << std::hex << "sin input: 0x" << sfu_input
+    //                           << " gl: 0x" << g_u
+    //                           << " rst: 0x" << rst
+    //                           << " diff: " << diff << std::endl;
     // // assert(false);
     // #pragma omp critical
     //                 {
@@ -138,7 +366,7 @@ int main()
     //     //(0 ~1)24个ulp
     //     std::cout << std::hex << "sin max ulp: " << sin_max_ulp << " input: " << sin_max_input << std::endl;
 
-    //     // test cos
+    // test cos
     //     uint32_t cos_max_ulp = 0;
     //     uint32_t cos_max_input = 0;
     // #pragma omp parallel for
@@ -178,7 +406,7 @@ int main()
     //             }
     //         }
     //     }
-    //(0 ~1)24个ulp
+    // // (0 ~1)24个ulp
     // std::cout << std::hex << "cos max ulp: " << cos_max_ulp << " input: " << cos_max_input << std::endl;
 
     //     std::cout << "--- Start fp32_exp2 exhaustive test ---" << std::endl;
@@ -247,104 +475,4 @@ int main()
     //     std::cout << std::dec << "exp2 errors (>4 ULP): " << exp2_error_count << std::endl;
     //     std::cout << std::hex << "exp2 max ulp: " << exp2_max_ulp << std::endl;
     //     std::cout << "---------------------------------------" << std::endl;
-
-    std::cout << "--- Start fp32_sig exhaustive test ---" << std::endl;
-
-    uint32_t sig_max_ulp = 0;
-    uint32_t sig_error_count = 0;
-
-#pragma omp parallel for
-    for (size_t src = 0; src < 0x100000000; src++)
-    {
-        uint32_t src_hex = (uint32_t)src;
-        float float_input = *reinterpret_cast<float *>(&src_hex);
-
-        // ==========================================
-        // 1. 获取 CPU 双精度计算的 Golden 结果
-        // ==========================================
-        // 转为 double 算真值，再截断回 float，保证 Golden 的完美精度
-        double d_in = (double)float_input;
-        float g_f = (float)(1.0 / (1.0 + std::exp(-d_in)));
-        uint32_t g_u = *reinterpret_cast<uint32_t *>(&g_f);
-
-        // ==========================================
-        // 2. 获取你的硬件仿真结果
-        // ==========================================
-        uint32_t rst = fp32_sig(src_hex);
-
-        // ==========================================
-        // 3. 💡 硬件行为对齐滤镜 (Filters)
-        // ==========================================
-
-        // 滤镜 A: NaN 屏蔽
-        bool is_in_nan = ((src_hex & 0x7F800000) == 0x7F800000) && ((src_hex & 0x007FFFFF) != 0);
-        if (is_in_nan)
-            continue;
-
-        // 滤镜 B: Sigmoid 特有的饱和区双向强制对齐 (Saturation Bypass)
-        // 假设你的硬件在 |x| >= 16.0 时直接输出 1.0 或 0.0 (请根据你真实的硬件代码阈值修改！)
-        // if (float_input >= 16.0f)
-        // {
-        //     g_u = 0x3F800000; // 强行让 CPU 在正饱和区输出 1.0
-        // }
-        // else if (float_input <= -16.0f)
-        // {
-        //     g_u = 0x00000000; // 强行让 CPU 在负饱和区输出 0.0
-        // }
-
-        // // 滤镜 C: 双向非规格化数冲刷到零 (FTZ)
-        // // 只要阶码是 0 (即 bits 23-30 全为 0)，统统强行刷成纯 0！
-        // if ((g_u & 0x7F800000) == 0)
-        //     g_u = 0x00000000;
-        // if ((rst & 0x7F800000) == 0)
-        //     rst = 0x00000000;
-
-        // // 滤镜 D: 统一冲刷 -0.0 为 +0.0
-        // if (g_u == 0x80000000)
-        //     g_u = 0x00000000;
-        // if (rst == 0x80000000)
-        //     rst = 0x00000000;
-
-        // ==========================================
-
-        // 4. 计算 ULP Diff
-        uint32_t diff = g_u > rst ? g_u - rst : rst - g_u;
-
-        // 5. 统计与报错逻辑 (容忍最大 4~5 ULP 的误差)
-        if (diff > sig_max_ulp)
-        {
-            // 💡 修复 OpenMP 数据竞争：使用 critical 区块安全更新最大值
-#pragma omp critical
-            {
-                if (diff > sig_max_ulp)
-                {
-                    sig_max_ulp = diff;
-                }
-            }
-        }
-
-        // 打印出超过宽容度 (例如 5 ULP) 的异常值，方便 Debug
-        if (diff > 0x10000)
-        {
-#pragma omp critical
-            {
-                sig_error_count++;
-                // 为了防止刷屏，只打印前 20 个错误
-                if (sig_error_count <= 20)
-                {
-                    std::cout << std::hex
-                              << "sig input: 0x" << src_hex
-                              << " (" << float_input << ")"
-                              << " | gl: 0x" << g_u
-                              << " | rst: 0x" << rst
-                              << std::dec << " | diff: " << diff
-                              << std::endl;
-                }
-            }
-        }
-    }
-
-    std::cout << std::dec << "sig errors (>5 ULP): " << sig_error_count << std::endl;
-    std::cout << std::hex << "sig max ulp: " << sig_max_ulp << std::endl;
-    std::cout << "---------------------------------------" << std::endl;
 }
