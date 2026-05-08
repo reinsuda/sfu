@@ -1082,3 +1082,67 @@ def compute_coeffs_sigmoid_multi_region(t, p, q):
 t_width, p_width, q_width = 27, 18, 13
 final_table = compute_coeffs_sigmoid_multi_region(t_width, p_width, q_width)
 save_to_files(final_table, t_width+1, p_width+1, q_width+1, "sig_coeffs.h", "FP32_SIG_TABLE", 192)
+
+import numpy as np
+
+def compute_coeffs_tanh_multi_region(t, p, q):
+    def tanh_func(x):
+        return np.tanh(x)
+
+    regions = [
+        (0.0, 1.0, 32, "exp 120~126 [0, 1)", 0),
+        (1.0, 2.0, 32, "exp == 127  [1, 2)", 0),
+        (2.0, 4.0, 32, "exp == 128  [2, 4)", 1),
+        (4.0, 8.0, 32, "exp == 129  [4, 8)", 2),
+        (8.0, 16.0, 32,"exp == 130  [8, 16)", 3)
+    ]
+
+    errmax = 0
+    results = []
+    global_seg = 0
+
+    for start, end, num_segments, name, exp_shift in regions:
+        dx_max = (end - start) / num_segments
+        cur_p = p + exp_shift
+        cur_q = q + 2 * exp_shift
+        
+        for i in range(num_segments):
+            # 💡 强力左边界逻辑
+            m_start = start + i * dx_max
+            n = 2**16 
+            delta_nodes = np.linspace(0, dx_max, n)
+            y_nodes = tanh_func(m_start + delta_nodes)
+
+            poly_coeffs = np.polyfit(delta_nodes, y_nodes, 2)
+            a2_raw, a1_raw = poly_coeffs[0], poly_coeffs[1]
+
+            C1 = np.round(a1_raw * (2**cur_p)) * (2**-cur_p)
+            C2 = np.round(a2_raw * (2**cur_q)) * (2**-cur_q) 
+
+            # 💡 第 0 段强制过原点（C0 = 0）
+            if global_seg == 0:
+                C0 = 0.0
+            else:
+                rem_y = tanh_func(m_start + delta_nodes) - (C1 * delta_nodes + C2 * (delta_nodes**2))
+                a0_minimax = (np.max(rem_y) + np.min(rem_y)) / 2.0
+                C0 = np.round(a0_minimax * (2**t)) * (2**-t)
+
+            c0_abs = abs(int(round(C0 * 2**t)))
+            c1_abs = abs(int(round(C1 * 2**cur_p)))
+            c2_abs = abs(int(round(C2 * 2**cur_q)))
+
+            results.append({
+                "global_seg": global_seg,
+                "C0_int": c0_abs, "C1_int": c1_abs, "C2_int": c2_abs
+            })
+            global_seg += 1
+
+    return results
+
+# 17 位精度完美匹配你的 C++ pre.B_pre = 17
+t_width, p_width, q_width = 27, 17, 13
+print("Generating Tanh Coefficients...")
+final_table = compute_coeffs_tanh_multi_region(t_width, p_width, q_width)
+
+# ⚠️ 确保这段保存代码执行了，并且替换了 C++ 目录下的旧文件！
+save_to_files(final_table, t_width+1, p_width+1, q_width+1, "tanh_coeffs.h", "FP32_TANH_TABLE", 160)

@@ -10,9 +10,6 @@
 #include <iostream>
 #include <cstdint>
 
-typedef __int128 int128_t;
-typedef unsigned __int128 uint128_t;
-
 #define PI 3.1415927
 
 // #define max(a, b) (((a) > (b)) ? (a) : (b))
@@ -514,5 +511,6 @@ uint32_t fp32_rsq(uint32_t src);
 uint32_t fp32_log2(uint32_t src);
 uint32_t fp32_exp2(uint32_t src);
 uint32_t fp32_sig(uint32_t src);
+uint32_t fp32_tanh(uint32_t src);
 uint32_t fp32_sin(uint32_t src, bool ftz);
 uint32_t fp32_cos(uint32_t src, bool ftz);

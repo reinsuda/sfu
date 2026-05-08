@@ -15,7 +15,9 @@ sfu_srcs = [
   'src/sin.cpp',
   'src/sqrt.cpp',
   'src/exp2.cpp',
-  'src/sig.cpp'
+  'src/sig.cpp',
+  'src/tanh.cpp'
+
 ]
 
 # 3. 编译核心库
