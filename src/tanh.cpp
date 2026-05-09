@@ -134,6 +134,12 @@ uint32_t fp32_tanh(uint32_t src)
         return sign | 0x3f800000;
     }
 
+    if (exp == 130)
+    {
+        uint32_t rst = NormalizeToFP32(table.c0, 127, pre.A_pre);
+        return sign | rst;
+    }
+
     // 💡 注意看这里：正好传了 7 个参数！跟上面完美匹配！
     uint64_t table_res = tan_fix_multi(table.c0, table.c1_abs, table.c2, delta,
                                        pre.A_pre, pre.B_pre, pre.C_pre);
@@ -147,58 +153,3 @@ uint32_t fp32_tanh(uint32_t src)
 
     return sign | rst;
 }
-
-// uint32_t fp32_tanh(uint32_t src)
-// {
-
-//     Precision pre;
-//     pre.A_pre = 27;
-//     pre.B_pre = 17;
-//     pre.C_pre = 13;
-//     // special number handle
-//     uint32_t sign = src & 0x80000000;
-//     uint32_t nonsign = sign ^ src;
-//     if (fp32_is_nan(src))
-//     {
-//         return 0xFFFFFFFF;
-//     }
-//     if (fp32_is_inf(src))
-//     {
-//         return sign | 0x3f800000;
-//     }
-//     if (fp32_is_zero(src))
-//     {
-//         return src;
-//     }
-
-//     int32_t exp = (nonsign >> FP32_MANT_WIDTH) & N_BIT_1(FP32_EXP_WIDTH);
-//     uint32_t mant = nonsign & N_BIT_1(FP32_MANT_WIDTH);
-//     if (exp <= 119)
-//         return src;
-//     uint32_t lut_id = 0;
-//     uint32_t delta = 0;
-//     uint32_t delta_bit = 0;
-//     rcp_entry_t table;
-//     uint64_t table_res;
-//     if (exp <= 130)
-//     {
-//         lut_id = getTanhTableId(exp, mant, delta, delta_bit);
-//         table = FP32_TANH_TABLE[lut_id];
-//     }
-//     else // use exp table exp >=130 TODO optim
-//     {
-//         return sign | 0x3f800000;
-//     }
-//     table_res = tan_fix_multi(table.c0, table.c1_abs, table.c2, delta, pre.A_pre, pre.B_pre, pre.C_pre, delta_bit);
-//     uint32_t wid_frac_A = pre.A_pre;
-//     uint32_t wid_frac_BXdel = pre.B_pre + FP32_MANT_WIDTH;
-//     uint32_t wid_frac_CXdel = pre.C_pre + FP32_MANT_WIDTH * 2;
-//     uint32_t max_width = std::max(std::max(wid_frac_BXdel, wid_frac_CXdel), wid_frac_A);
-
-//     uint32_t rst = 0;
-
-//     // SIG 表的结果永远视为基准阶码 127
-//     rst = table_res != 0 ? NormalizeToFP32(table_res, 127, max_width) : 0;
-
-//     return sign | rst;
-// }
