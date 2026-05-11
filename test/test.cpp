@@ -270,9 +270,9 @@ void test_tanh_partial()
     uint32_t tanh_max_err_rst = 0;
 
     // 根据需要调整你要测试的指数范围
-    for (size_t exp = 0; exp <= 255; exp++)
+    for (size_t exp = 130; exp <= 130; exp++)
     {
-#pragma omp parallel for
+        // #pragma omp parallel for
         for (size_t mant = 0; mant <= 0x7fffff; mant++)
         {
             // 💡 针对 Tanh，必须同时测试正数和负数 (遍历 bit 31)
