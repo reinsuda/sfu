@@ -1146,3 +1146,85 @@ final_table = compute_coeffs_tanh_multi_region(t_width, p_width, q_width)
 
 # ⚠️ 确保这段保存代码执行了，并且替换了 C++ 目录下的旧文件！
 save_to_files(final_table, t_width+1, p_width+1, q_width+1, "tanh_coeffs.h", "FP32_TANH_TABLE", 160)
+
+def compute_coeffs_sigmoid_neg_tail(t, p, q):
+    """
+    纯净版：不需要 exp_shift，因为硬件 delta 已经通过 <<3 对齐满量程。
+    """
+    def sigmoid_func(x):
+        return 1.0 / (1.0 + np.exp(-x))
+
+    regions = [
+        (-8.0, -16.0, 16, "exp == 130 [-8, -16)")
+    ]
+
+    errmax = 0
+    results = []
+    global_seg = 0
+
+    print(f"{'Seg':<4} | {'Range':<10} | {'C0 (Hex)':<12} | {'C1 (Hex)':<12} | {'C2 (Hex)':<12} | {'Error':<10}")
+    print("-" * 75)
+
+    for start, end, num_segments, name in regions:
+        dx_max = abs(end - start) / num_segments
+        
+        # 💡 核心修复：直接使用硬件原生的 p 和 q，坚决不加 exp_shift！
+        cur_p = p + 3
+        cur_q = q + 3 
+        
+        for i in range(num_segments):
+            m_start = start - i * dx_max
+            n = 2**16 
+            delta_nodes = np.linspace(0, dx_max, n)
+            
+            x_nodes = m_start - delta_nodes
+            y_nodes = sigmoid_func(x_nodes)
+
+            poly_coeffs = np.polyfit(delta_nodes, y_nodes, 2)
+            a2_raw, a1_raw = poly_coeffs[0], poly_coeffs[1]
+
+            C1 = np.round(a1_raw * (2**cur_p)) * (2**-cur_p)
+            C2 = np.round(a2_raw * (2**cur_q)) * (2**-cur_q) 
+
+            rem_y = y_nodes - (C1 * delta_nodes + C2 * (delta_nodes**2))
+            a0_minimax = (np.max(rem_y) + np.min(rem_y)) / 2.0
+            C0 = np.round(a0_minimax * (2**t)) * (2**-t)
+
+            test_delta = np.linspace(0, dx_max, 500)
+            actual_y = sigmoid_func(m_start - test_delta)
+            approx_y = C0 + C1 * test_delta + C2 * (test_delta**2)
+            err = np.max(np.abs(actual_y - approx_y))
+
+            if err > errmax: errmax = err
+
+            c0_abs = abs(int(round(C0 * 2**t)))
+            c1_abs = abs(int(round(C1 * 2**cur_p)))
+            c2_abs = abs(int(round(C2 * 2**cur_q)))
+
+            mask_t = (1 << (t + 2)) - 1
+            mask_p = (1 << (cur_p + 2)) - 1
+            mask_q = (1 << (cur_q + 2)) - 1
+
+            c0_masked = c0_abs & mask_t
+            c1_masked = c1_abs & mask_p
+            c2_masked = c2_abs & mask_q
+
+            results.append({
+                "global_seg": global_seg,
+                "C0_int": c0_abs, "C1_int": c1_abs, "C2_int": c2_abs
+            })
+            
+            range_str = f"[{int(m_start)}, {int(m_start-dx_max)})"
+            print(f"{global_seg:<4} | {range_str:<10} | {c0_masked:<12x} | {c1_masked:<12x} | {c2_masked:<12x} | {err:.2e}")
+            global_seg += 1
+
+    print("-" * 75)
+    print(f"最大绝对误差 (MAE): {errmax:.12e}")
+    good_bits = np.abs(np.log2(errmax)) if errmax > 0 else 0
+    print(f"等效精度 (Good Bits): {good_bits:.2f} bits\n")
+    return results
+
+t_width, p_width, q_width = 33, 28, 18
+print("Generating Tanh Coefficients...")
+final_table = compute_coeffs_sigmoid_neg_tail(t_width, p_width, q_width)
+save_to_files(final_table, t_width+1, p_width+1, q_width+1, "sigmoid_neg_tail.h", "FP32_SIG_NEG_TABLE", 8)
